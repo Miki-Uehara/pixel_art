@@ -79,6 +79,14 @@ def do_snap(img,dots,scale,colors):
                         fallback_target_segments=int(dots),min_cuts_per_axis=4)
     return pixel_snap(as_pil(img),cfg)
 
+def size_text(img, dots, scale):
+    if img is None:
+        return "⬆ ②大元の画像をアップロードしてね！"
+    iw, ih = as_pil(img).size
+    dh = max(4, round(int(dots) * ih / iw))
+    return (f"📥 入力 {iw}×{ih}px 　🔲 ドット数 {int(dots)}×{dh} 　"
+            f"📤 出力 {int(dots)*int(scale)}×{dh*int(scale)}px （×{int(scale)} 表示）")
+
 def _hex_to_rgb(hex_color: str) -> tuple:
     h = hex_color.lstrip("#")
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
@@ -251,6 +259,20 @@ h1 {
     letter-spacing: 2px !important;
 }
 
+.size-bar p {
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 14px !important;
+    color: #664488 !important;
+    background: linear-gradient(90deg, #fff0ff, #f8f0ff) !important;
+    border: 2px solid #ddaaff !important;
+    border-radius: 10px !important;
+    padding: 10px 18px !important;
+    text-align: center !important;
+    letter-spacing: 1px !important;
+    box-shadow: 2px 2px 0 #e8ccff !important;
+    margin: 6px 0 12px !important;
+}
+
 .gr-group, .gr-box {
     background: rgba(255,255,255,0.80) !important;
     border: 2px solid #e8d0ff !important;
@@ -400,6 +422,8 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     # ══════════════════════════════════════════════════
     gr.Markdown("✨ **STEP 3　ピクセル化＆背景透過の設定**", elem_classes="section-head")
 
+    size_bar = gr.Markdown("⬆ ②大元の画像をアップロードしてね！", elem_classes="size-bar")
+
     with gr.Row():
         dot_count = gr.Slider(32, 512, value=128, step=8,
             label="ドット数（横）",
@@ -438,6 +462,11 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                                   variant="secondary", visible=False)
 
     # ── ハンドラ配線 ────────────────────────────
+    for comp in [sm_orig_in, dot_count, display_scale]:
+        comp.change(fn=size_text,
+                    inputs=[sm_orig_in, dot_count, display_scale],
+                    outputs=size_bar)
+
     sm_build_btn.click(
         fn=h_smart_build,
         inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol, sm_island_max, sm_fill],
