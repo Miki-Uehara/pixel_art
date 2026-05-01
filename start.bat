@@ -12,8 +12,4 @@ if not exist "%PYTHON%" (
 taskkill /F /IM python.exe /T >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-start "" "%PYTHON%" app.py
-
-timeout /t 5 /nobreak >nul
-
-start http://127.0.0.1:7860
+"%PYTHON%" app.py
