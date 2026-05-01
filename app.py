@@ -684,12 +684,12 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                 sm_bg_in   = gr.Image(type="pil", label="③ 背景だけ色を変えた画像", height=260)
 
             with gr.Row():
-                sm_line_thr = gr.Slider(10, 220, value=128, step=1,
+                sm_line_thr = gr.Slider(10, 220, value=150, step=1,
                     label="線画抽出しきい値（輝度この値より暗い＝線）",
-                    info="低い：濃い線のみ　高い：薄い線も拾う（標準128）")
-                sm_bg_tol = gr.Slider(5, 150, value=40, step=1,
+                    info="低い：濃い線のみ　高い：薄い線も拾う（標準150）")
+                sm_bg_tol = gr.Slider(5, 250, value=150, step=1,
                     label="②と③の差分しきい値（背景判定）",
-                    info="②と③でこの値以上色が変わったピクセル＝背景。低い：わずかな差でも背景　高い：大幅変化のみ背景")
+                    info="②と③でこの値以上色が変わったピクセル＝背景。低い：わずかな差でも背景　高い：大幅変化のみ背景（標準150）")
                 sm_fill = gr.ColorPicker(value="#ff88cc",
                     label="🎨 下塗りの色（プレビュー用）")
             with gr.Row():
