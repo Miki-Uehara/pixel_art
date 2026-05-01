@@ -562,7 +562,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     k_colors = gr.Slider(4, 64, value=16, step=4,
         label="カラーパレット数",
         info="少ない：よりドット絵らしく　多い：原画に近い色味")
-    sm_edge_thick = gr.Slider(1, 30, value=10, step=1,
+    sm_edge_thick = gr.Slider(1, 30, value=8, step=1,
         label="外淵の太さ（px・元解像度基準）",
         info="ピクセル化前の元画像で何px分の縁取りを残すか。大きいほど太い縁取りに")
 
