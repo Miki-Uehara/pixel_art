@@ -605,16 +605,24 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        inbrowser=True,
-        share=False,
-        css=CSS,
-        theme=gr.themes.Soft(
-            primary_hue=gr.themes.colors.pink,
-            secondary_hue=gr.themes.colors.purple,
-            neutral_hue=gr.themes.colors.purple,
-            font=gr.themes.GoogleFont("M PLUS Rounded 1c"),
-        ),
+    _on_spaces = bool(os.environ.get("SPACE_ID"))
+    _theme = gr.themes.Soft(
+        primary_hue=gr.themes.colors.pink,
+        secondary_hue=gr.themes.colors.purple,
+        neutral_hue=gr.themes.colors.purple,
+        font=gr.themes.GoogleFont("M PLUS Rounded 1c"),
     )
+    if _on_spaces:
+        _user = os.environ.get("APP_USER")
+        _pass = os.environ.get("APP_PASS")
+        _auth = (_user, _pass) if _user and _pass else None
+        demo.launch(server_name="0.0.0.0", auth=_auth, css=CSS, theme=_theme)
+    else:
+        demo.launch(
+            server_name="127.0.0.1",
+            server_port=7860,
+            inbrowser=True,
+            share=False,
+            css=CSS,
+            theme=_theme,
+        )
