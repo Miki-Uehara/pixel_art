@@ -159,20 +159,49 @@ def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr, island_
     mask = make_mask(labels_st, region_is_char, is_line_st)
     return preview, region_is_char, f"♻ 再判定しました（閉じ島 {absorbed} 個吸収）  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
+def _pixelize_lineart(is_line: np.ndarray, dots: int, scale: int,
+                      line_color=(20, 20, 20)) -> Image.Image:
+    """線画(boolマスク)を指定ドット数でピクセル化したRGBA画像を返す。"""
+    h, w = is_line.shape
+    dw = int(dots)
+    dh = max(4, round(dw * h / w))
+    sw, sh = dw * int(scale), dh * int(scale)
+
+    line_img = Image.fromarray((is_line.astype(np.uint8) * 255), "L")
+    small = line_img.resize((dw, dh), Image.BILINEAR)
+    small_bin = np.where(np.array(small) >= 128, 255, 0).astype(np.uint8)
+    big = np.array(Image.fromarray(small_bin, "L").resize((sw, sh), Image.NEAREST))
+
+    rgba = np.zeros((sh, sw, 4), dtype=np.uint8)
+    opaque = big > 0
+    rgba[opaque, 0] = line_color[0]
+    rgba[opaque, 1] = line_color[1]
+    rgba[opaque, 2] = line_color[2]
+    rgba[:, :, 3] = big
+    return Image.fromarray(rgba, "RGBA")
+
 def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
                      dots, scale, colors, sat, bri, con, hue):
     if labels_st is None or region_st is None or orig_st is None:
-        return None, None, "⚠ 先に「下塗り生成」を実行してください", gr.update(visible=False)
+        return (None, None, "⚠ 先に「下塗り生成」を実行してください",
+                gr.update(visible=False), gr.update(visible=False))
     mask = make_mask(labels_st, region_st, is_line_st)
     base = as_pil(orig_st)
     adjusted = adjust_colors(base, float(sat), float(bri), float(con), float(hue))
     rgba = pixelize_with_mask(adjusted, mask, do_snap, int(dots), int(scale), int(colors))
     prev = on_checker(rgba)
     path = save(rgba, "smart_pixel")
+
+    line_pix = _pixelize_lineart(is_line_st, int(dots), int(scale))
+    line_prev = on_checker(line_pix)
+    line_path = save(line_pix, "lineart_pixel")
+
     iw, ih = rgba.size
     info = (f"✅ ピクセル化＆透過完了！  {iw}×{ih}px  /  "
             f"{int(colors)}色  /  ×{int(scale)}表示")
-    return rgba, prev, info, gr.update(visible=True, value=path)
+    return (line_prev, prev, info,
+            gr.update(visible=True, value=line_path),
+            gr.update(visible=True, value=path))
 
 
 # ─── CSS ──────────────────────────────────────────────
@@ -396,12 +425,17 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
     sm_final_btn = gr.Button("🎨 ピクセル化＆透過を実行！", variant="primary", size="lg")
     with gr.Row():
-        sm_final_raw = gr.Image(type="pil", label="✅ 透過PNG（生）", height=380)
-        sm_final_prev = gr.Image(type="pil", label="✅ 透過プレビュー（チェック柄）", height=380)
+        sm_lineart_pix = gr.Image(type="pil",
+            label="✏ ピクセル化された線画（チェック柄=透過）", height=380)
+        sm_final_prev = gr.Image(type="pil",
+            label="✅ ピクセルアート透過プレビュー（チェック柄）", height=380)
     sm_final_info = gr.Textbox(label="📋 ステータス", lines=1, interactive=False,
                                elem_classes="status-box")
-    sm_dl = gr.DownloadButton("📥 ピクセルアート透過PNG をダウンロード",
-                              variant="secondary", visible=False)
+    with gr.Row():
+        sm_lineart_pix_dl = gr.DownloadButton("📥 ピクセル化線画 PNG をダウンロード",
+                                              variant="secondary", visible=False)
+        sm_dl = gr.DownloadButton("📥 ピクセルアート透過PNG をダウンロード",
+                                  variant="secondary", visible=False)
 
     # ── ハンドラ配線 ────────────────────────────
     sm_build_btn.click(
@@ -425,7 +459,8 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
         inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state,
                 dot_count, display_scale, k_colors,
                 saturation, brightness, contrast, hue_shift],
-        outputs=[sm_final_raw, sm_final_prev, sm_final_info, sm_dl],
+        outputs=[sm_lineart_pix, sm_final_prev, sm_final_info,
+                 sm_lineart_pix_dl, sm_dl],
     )
 
 
