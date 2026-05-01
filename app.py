@@ -18,8 +18,13 @@ if _env.exists():
             os.environ.setdefault(k.strip(), v.strip())
 
 from steps.step2_pixel_snap import pixel_snap, PixelSnapConfig
-from steps.step3_remove_bg import remove_white_background
+from steps.step3_remove_bg import remove_white_background, remove_color_background
 from steps.step5_lineart import extract_lineart, base_coat
+from steps.step6_smart_extract import (
+    detect_bg_color, line_mask_from_lineart, build_regions,
+    initial_classify, make_mask, render_overlay, toggle_region_at,
+    pixelize_with_mask,
+)
 
 FINAL_DIR = Path(__file__).parent / "output" / "final"
 FINAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -82,9 +87,18 @@ def do_snap(img,dots,scale,colors):
                         fallback_target_segments=int(dots),min_cuts_per_axis=4)
     return pixel_snap(as_pil(img),cfg)
 
-def do_final(snapped,sat,bri,con,hue,bg,tol):
+def _hex_to_rgb(hex_color: str) -> tuple:
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def do_final(snapped,sat,bri,con,hue,bg,bg_mode,custom_color,tol):
     adj=adjust_colors(snapped,float(sat),float(bri),float(con),float(hue))
-    return remove_white_background(adj,int(tol)) if bg else adj.convert("RGBA")
+    if not bg:
+        return adj.convert("RGBA")
+    if bg_mode == "カスタム色":
+        rgb = _hex_to_rgb(custom_color or "#ffffff")
+        return remove_color_background(adj, rgb, int(tol))
+    return remove_white_background(adj, int(tol))
 
 def save(rgba,prefix="pixel_art"):
     p=FINAL_DIR/f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
@@ -93,11 +107,11 @@ def save(rgba,prefix="pixel_art"):
 
 # ─── ハンドラ ──────────────────────────────────────────
 
-def h_snap(img,dots,scale,colors,sat,bri,con,hue,bg,tol):
+def h_snap(img,dots,scale,colors,sat,bri,con,hue,bg,bg_mode,custom_color,tol):
     if img is None:
         return None,None,"⚠ 画像がまだロードされていません！",gr.update(visible=False),None
     snapped=do_snap(img,dots,scale,colors)
-    rgba=do_final(snapped,sat,bri,con,hue,bg,tol)
+    rgba=do_final(snapped,sat,bri,con,hue,bg,bg_mode,custom_color,tol)
     prev=on_checker(rgba)
     iw,ih=as_pil(img).size; dh=max(4,round(int(dots)*ih/iw))
     info=(f"✅ 変換完了！  ドット数 {int(dots)}×{dh}  /  "
@@ -106,30 +120,40 @@ def h_snap(img,dots,scale,colors,sat,bri,con,hue,bg,tol):
     path=save(rgba)
     return snapped,prev,info,snapped,gr.update(visible=True,value=path)
 
-def h_color(st,sat,bri,con,hue,bg,tol):
+def h_color(st,sat,bri,con,hue,bg,bg_mode,custom_color,tol):
     if st is None: return None
-    return on_checker(do_final(as_pil(st),sat,bri,con,hue,bg,tol))
+    return on_checker(do_final(as_pil(st),sat,bri,con,hue,bg,bg_mode,custom_color,tol))
 
-def h_color_save(st,sat,bri,con,hue,bg,tol):
+def h_color_save(st,sat,bri,con,hue,bg,bg_mode,custom_color,tol):
     if st is None: return gr.update(visible=False),"⚠ 先に変換実行してください"
-    path=save(do_final(as_pil(st),sat,bri,con,hue,bg,tol))
+    path=save(do_final(as_pil(st),sat,bri,con,hue,bg,bg_mode,custom_color,tol))
     return gr.update(visible=True,value=path),f"💾 保存完了！  {Path(path).name}"
 
-def h_compare(img,colors,scale,sat,bri,con,hue,bg,tol):
+def h_compare(img,colors,scale,sat,bri,con,hue,bg,bg_mode,custom_color,tol):
     if img is None: return [],"⚠ 画像がありません"
     pil=as_pil(img); iw,ih=pil.size; res=[]
     for d in [64,96,128,192,256]:
         snapped=do_snap(img,d,scale,colors)
-        rgba=do_final(snapped,sat,bri,con,hue,bg,tol)
+        rgba=do_final(snapped,sat,bri,con,hue,bg,bg_mode,custom_color,tol)
         dh=max(4,round(d*ih/iw))
         res.append((on_checker(rgba),f"{d}ドット → {d*int(scale)}×{dh*int(scale)}px"))
     return res,f"✨ 5パターン生成完了！  {int(colors)}色 / ×{int(scale)}表示"
 
-def h_compare_save(img,dot,scale,colors,sat,bri,con,hue,bg,tol):
+def h_compare_save(img,dot,scale,colors,sat,bri,con,hue,bg,bg_mode,custom_color,tol):
     if img is None: return gr.update(visible=False),"⚠ 画像がありません"
-    rgba=do_final(do_snap(img,int(dot),scale,colors),sat,bri,con,hue,bg,tol)
+    rgba=do_final(do_snap(img,int(dot),scale,colors),sat,bri,con,hue,bg,bg_mode,custom_color,tol)
     path=save(rgba,prefix=f"pixel_{int(dot)}dot")
     return gr.update(visible=True,value=path),f"💾 保存完了！  {Path(path).name}"
+
+def h_pick_color(img, evt: gr.SelectData):
+    if img is None:
+        return "#ffffff"
+    pil = as_pil(img).convert("RGB")
+    w, h = pil.size
+    x = min(max(0, evt.index[0]), w - 1)
+    y = min(max(0, evt.index[1]), h - 1)
+    r, g, b = pil.getpixel((x, y))
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 def h_lineart_extract(img, thr):
     if img is None:
@@ -147,6 +171,74 @@ def h_base_coat(lineart_st, color):
     prev = on_checker(result)
     path = save(result, "basecoat")
     return prev, f"✅ 下塗り完了！  塗り色: {color}", gr.update(visible=True, value=path)
+
+
+# ─── スマート抽出タブ用 ──────────────────────────────────
+
+def _ensure_same_size(img_a, img_b, img_c):
+    """3枚の画像を ②大元 のサイズに揃える（線画と背景色画像をリサイズ）。"""
+    base = as_pil(img_b).convert("RGB")
+    w, h = base.size
+    a = as_pil(img_a).convert("RGBA")
+    if a.size != (w, h):
+        a = a.resize((w, h), Image.LANCZOS)
+    c = as_pil(img_c).convert("RGB")
+    if c.size != (w, h):
+        c = c.resize((w, h), Image.LANCZOS)
+    return a, base, c
+
+def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, bg_tol):
+    if img_line is None or img_orig is None or img_bgpaint is None:
+        return (None, None, None, None, None,
+                "⚠ 3枚すべて（線画／大元／背景色塗り）をアップロードしてください")
+    a, b, c = _ensure_same_size(img_line, img_orig, img_bgpaint)
+    bg_color = detect_bg_color(c)
+    is_line = line_mask_from_lineart(a, int(line_thr))
+    labels, num = build_regions(is_line)
+    region_is_char = initial_classify(labels, num, c, bg_color, int(bg_tol))
+    mask = make_mask(labels, region_is_char, is_line)
+    overlay = render_overlay(b, mask)
+    info = (f"✅ 自動マスク生成完了！  領域数 {num}  /  "
+            f"検出背景色 RGB{bg_color}  /  キャラ画素 {int(mask.sum())}px")
+    return labels, is_line, region_is_char, b, overlay, info
+
+def h_smart_click(labels_st, is_line_st, region_st, orig_st, evt: gr.SelectData):
+    if labels_st is None or region_st is None or orig_st is None:
+        return None, region_st, "⚠ 先に「自動マスク生成」を実行してください"
+    x, y = int(evt.index[0]), int(evt.index[1])
+    new_region = toggle_region_at(region_st, labels_st, x, y)
+    mask = make_mask(labels_st, new_region, is_line_st)
+    overlay = render_overlay(as_pil(orig_st), mask)
+    return overlay, new_region, f"🖱 ({x},{y}) の領域を反転  /  キャラ画素 {int(mask.sum())}px"
+
+def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, bg_tol):
+    if labels_st is None or img_bgpaint is None or orig_st is None:
+        return None, None, "⚠ まず自動マスク生成を実行してください"
+    c = as_pil(img_bgpaint).convert("RGB")
+    ow, oh = as_pil(orig_st).size
+    if c.size != (ow, oh):
+        c = c.resize((ow, oh), Image.LANCZOS)
+    num = int(labels_st.max())
+    bg_color = detect_bg_color(c)
+    region_is_char = initial_classify(labels_st, num, c, bg_color, int(bg_tol))
+    mask = make_mask(labels_st, region_is_char, is_line_st)
+    overlay = render_overlay(as_pil(orig_st), mask)
+    return overlay, region_is_char, f"♻ リセットしました  /  キャラ画素 {int(mask.sum())}px"
+
+def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
+                     dots, scale, colors, sat, bri, con, hue):
+    if labels_st is None or region_st is None or orig_st is None:
+        return None, None, "⚠ 先に「自動マスク生成」を実行してください", gr.update(visible=False)
+    mask = make_mask(labels_st, region_st, is_line_st)
+    base = as_pil(orig_st)
+    adjusted = adjust_colors(base, float(sat), float(bri), float(con), float(hue))
+    rgba = pixelize_with_mask(adjusted, mask, do_snap, int(dots), int(scale), int(colors))
+    prev = on_checker(rgba)
+    path = save(rgba, "smart_pixel")
+    iw, ih = rgba.size
+    info = (f"✅ ピクセル化＆透過完了！  {iw}×{ih}px  /  "
+            f"{int(colors)}色  /  ×{int(scale)}表示")
+    return rgba, prev, info, gr.update(visible=True, value=path)
 
 
 # ─── CSS ──────────────────────────────────────────────
@@ -366,6 +458,10 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
     snapped_state   = gr.State(None)
     lineart_state   = gr.State(None)
+    sm_labels_state = gr.State(None)
+    sm_isline_state = gr.State(None)
+    sm_region_state = gr.State(None)
+    sm_orig_state   = gr.State(None)
 
     gr.Markdown("# ✨ ピクセルアート ジェネレーター ✨", elem_classes="title")
     gr.Markdown("AIイラスト → ピクセルアート → 透過PNG  の自動変換ツール",
@@ -406,16 +502,40 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             # ── 背景透過設定 ──
             gr.Markdown("✂ **背景透過設定**", elem_classes="section-head")
             with gr.Row():
-                do_remove_bg = gr.Checkbox(value=True, label="白背景を透過する")
+                do_remove_bg = gr.Checkbox(value=True, label="背景を透過する")
                 bg_tolerance = gr.Slider(0, 60, value=15, step=1,
-                    label="白の許容誤差",
-                    info="0：純白のみ除去　60：かなり広く除去")
+                    label="色の許容誤差",
+                    info="0：指定色のみ除去　60：近似色も広く除去")
+            bg_mode = gr.Radio(
+                choices=["白背景", "カスタム色"],
+                value="白背景",
+                label="透過する背景の色",
+            )
+            with gr.Row(visible=False) as custom_color_row:
+                custom_color = gr.ColorPicker(
+                    value="#ffffff",
+                    label="🎨 背景色（入力画像をクリックしてピック）",
+                )
+                gr.Markdown(
+                    "← 左の入力画像をクリックすると\nその場所の色が自動でセットされます",
+                    elem_classes="subtitle",
+                )
 
     # サイズ情報リアルタイム更新
     for comp in [input_image, dot_count, display_scale]:
         comp.change(fn=size_text,
                     inputs=[input_image, dot_count, display_scale],
                     outputs=size_bar)
+
+    # 入力画像クリック → カスタム色ピック
+    input_image.select(fn=h_pick_color, inputs=[input_image], outputs=[custom_color])
+
+    # bg_mode 切り替え → カスタム色ピッカーの表示/非表示
+    bg_mode.change(
+        fn=lambda m: gr.update(visible=(m == "カスタム色")),
+        inputs=[bg_mode],
+        outputs=[custom_color_row],
+    )
 
     # ══════════════════════════════════════════════════
     # カラー調整（アコーディオン）
@@ -438,7 +558,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                 label="色相シフト（度）",
                 info="0 = 変化なし　±180で色が反転")
 
-    color_inputs = [saturation, brightness, contrast, hue_shift, do_remove_bg, bg_tolerance]
+    color_inputs = [saturation, brightness, contrast, hue_shift, do_remove_bg, bg_mode, custom_color, bg_tolerance]
 
     # ══════════════════════════════════════════════════
     # タブ
@@ -530,6 +650,84 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                 fn=h_base_coat,
                 inputs=[lineart_state, bc_color],
                 outputs=[bc_preview, bc_info, bc_dl],
+            )
+
+        # ── タブ：スマート抽出＆ピクセル化 ──
+        with gr.TabItem("🪄 スマート抽出"):
+            gr.Markdown(
+                "**3枚の画像** をアップロードして、線画と背景色塗り画像を手がかりに "
+                "キャラ領域を自動判別＆クリックで微修正 → 大元画像をピクセル化＆透過します。",
+                elem_classes="subtitle"
+            )
+
+            gr.Markdown("📁 **3枚アップロード（同じサイズ推奨／自動リサイズあり）**",
+                        elem_classes="section-head")
+            with gr.Row():
+                sm_line_in = gr.Image(type="pil", label="① 線画", height=260)
+                sm_orig_in = gr.Image(type="pil", label="② 大元の白背景キャラ（最終ソース）", height=260)
+                sm_bg_in   = gr.Image(type="pil", label="③ 背景だけ色を変えた画像", height=260)
+
+            with gr.Row():
+                sm_line_thr = gr.Slider(10, 200, value=80, step=5,
+                    label="線画の線判定しきい値",
+                    info="低い：細い線も拾う　高い：濃い線のみ")
+                sm_bg_tol = gr.Slider(0, 80, value=30, step=1,
+                    label="背景色の許容誤差",
+                    info="③の四隅から背景色を自動検出。値を上げるとより広く背景判定")
+
+            with gr.Row():
+                sm_build_btn = gr.Button("🔍 自動マスク生成", variant="primary")
+                sm_reset_btn = gr.Button("♻ 現在の許容誤差で再判定", variant="secondary")
+
+            gr.Markdown(
+                "🖱 **下の画像をクリックすると、その連結領域を「キャラ ↔ 背景」反転できます。**\n"
+                "緑がかった部分が「背景」と判定された領域。塗り残しの島は1クリックで埋まり、"
+                "背景にはみ出した部分も1クリックで除去できます。",
+                elem_classes="subtitle"
+            )
+            sm_overlay = gr.Image(type="pil", label="🎯 マスクプレビュー（クリックで領域トグル）",
+                                  height=460, interactive=False)
+            sm_info = gr.Textbox(label="📋 ステータス", lines=2, interactive=False,
+                                 elem_classes="status-box")
+
+            gr.Markdown("---")
+            gr.Markdown("✨ **マスクが整ったらピクセル化＆透過**", elem_classes="section-head")
+            gr.Markdown(
+                "上部の「ドット設定／カラー設定／カラー調整」がそのまま使われます。"
+                "（背景透過チェックは無視 — マスクで透過します）",
+                elem_classes="subtitle"
+            )
+            sm_final_btn = gr.Button("🎨 ピクセル化＆透過を実行！", variant="primary", size="lg")
+            with gr.Row():
+                sm_final_raw = gr.Image(type="pil", label="✅ 透過PNG（生）", height=380)
+                sm_final_prev = gr.Image(type="pil", label="✅ 透過プレビュー（チェック柄）", height=380)
+            sm_final_info = gr.Textbox(label="📋 ステータス", lines=1, interactive=False,
+                                       elem_classes="status-box")
+            sm_dl = gr.DownloadButton("📥 透過PNG をダウンロード",
+                                      variant="secondary", visible=False)
+
+            sm_build_btn.click(
+                fn=h_smart_build,
+                inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol],
+                outputs=[sm_labels_state, sm_isline_state, sm_region_state,
+                         sm_orig_state, sm_overlay, sm_info],
+            )
+            sm_reset_btn.click(
+                fn=h_smart_reset,
+                inputs=[sm_labels_state, sm_isline_state, sm_orig_state, sm_bg_in, sm_bg_tol],
+                outputs=[sm_overlay, sm_region_state, sm_info],
+            )
+            sm_overlay.select(
+                fn=h_smart_click,
+                inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state],
+                outputs=[sm_overlay, sm_region_state, sm_info],
+            )
+            sm_final_btn.click(
+                fn=h_smart_finalize,
+                inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state,
+                        dot_count, display_scale, k_colors,
+                        saturation, brightness, contrast, hue_shift],
+                outputs=[sm_final_raw, sm_final_prev, sm_final_info, sm_dl],
             )
 
         # ── タブ3：5パターン比較 ──
