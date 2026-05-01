@@ -89,8 +89,21 @@ def size_text(img, dots, scale):
             f"📤 出力 {int(dots)*int(scale)}×{dh*int(scale)}px （×{int(scale)} 表示）")
 
 def _hex_to_rgb(hex_color: str) -> tuple:
-    h = hex_color.lstrip("#")
-    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+    s = (hex_color or "#141414").strip()
+    if s.startswith("#"):
+        h = s.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        try:
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return (20, 20, 20)
+    if s.lower().startswith(("rgb(", "rgba(")):
+        import re
+        nums = re.findall(r"[\d.]+", s)
+        if len(nums) >= 3:
+            return tuple(max(0, min(255, int(float(nums[i])))) for i in range(3))
+    return (20, 20, 20)
 
 def save(img, prefix="pixel_art"):
     p = FINAL_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
@@ -248,28 +261,6 @@ def h_recolor_line(edge_alpha_st, pixchar_st, line_color, line_alpha):
             gr.update(visible=True, value=comp_path))
 
 
-def h_toggle_eyedropper(active):
-    new_active = not bool(active)
-    label = "🎯 スポイトON（線画用画像をクリック）" if new_active else "💧 スポイトで色を取る"
-    return new_active, gr.update(value=label)
-
-
-def h_eyedrop_pick(eye_active, img_line, edge_alpha_st, pixchar_st, line_alpha,
-                   evt: gr.SelectData):
-    if not eye_active or img_line is None:
-        return (gr.update(), False, gr.update(value="💧 スポイトで色を取る"),
-                gr.update(), gr.update(), gr.update(), gr.update())
-    arr = np.array(as_pil(img_line).convert("RGB"))
-    h, w = arr.shape[:2]
-    x = int(np.clip(evt.index[0], 0, w - 1))
-    y = int(np.clip(evt.index[1], 0, h - 1))
-    rgb = tuple(int(v) for v in arr[y, x])
-    hex_color = _rgb_to_hex(rgb)
-    line_prev, comp_prev, line_dl, comp_dl = h_recolor_line(
-        edge_alpha_st, pixchar_st, hex_color, line_alpha)
-    return (gr.update(value=hex_color), False,
-            gr.update(value="💧 スポイトで色を取る"),
-            line_prev, comp_prev, line_dl, comp_dl)
 
 
 # ─── CSS ──────────────────────────────────────────────
@@ -430,7 +421,6 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     sm_orig_state   = gr.State(None)
     sm_edge_alpha_state = gr.State(None)
     sm_pixchar_state = gr.State(None)
-    sm_eye_state     = gr.State(False)
 
     gr.Markdown("# ✨ スマート抽出 ピクセルアート ✨", elem_classes="title")
     gr.Markdown("線画＋背景色画像で正確な下塗りを作って、大元画像をピクセル化＆透過",
@@ -488,16 +478,16 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     size_bar = gr.Markdown("⬆ ②大元の画像をアップロードしてね！", elem_classes="size-bar")
 
     with gr.Row():
-        dot_count = gr.Slider(32, 512, value=128, step=8,
+        dot_count = gr.Slider(32, 512, value=200, step=8,
             label="ドット数（横）",
             info="少ない：粗くてレトロ　多い：細かくてなめらか")
-        display_scale = gr.Slider(1, 16, value=1, step=1,
+        display_scale = gr.Slider(1, 16, value=6, step=1,
             label="表示倍率",
             info="1ドットを何pxで表示するか")
     k_colors = gr.Slider(4, 64, value=16, step=4,
         label="カラーパレット数",
         info="少ない：よりドット絵らしく　多い：原画に近い色味")
-    sm_edge_thick = gr.Slider(1, 30, value=8, step=1,
+    sm_edge_thick = gr.Slider(1, 30, value=10, step=1,
         label="外淵の太さ（px・元解像度基準）",
         info="ピクセル化前の元画像で何px分の縁取りを残すか。大きいほど太い縁取りに")
 
@@ -527,7 +517,6 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             label="線画カラー（自動検出後に変更可）")
         sm_line_alpha = gr.Slider(0, 100, value=100, step=1,
             label="線画の不透明度 (%)", info="100=くっきり / 下げるほど透けて馴染む")
-        sm_eye_btn = gr.Button("💧 スポイトで色を取る", variant="secondary")
 
     sm_final_info = gr.Textbox(label="📋 ステータス", lines=1, interactive=False,
                                elem_classes="status-box")
@@ -583,18 +572,6 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             outputs=[sm_lineart_pix, sm_composite_prev, sm_lineart_pix_dl, sm_composite_dl],
         )
 
-    sm_eye_btn.click(
-        fn=h_toggle_eyedropper,
-        inputs=[sm_eye_state],
-        outputs=[sm_eye_state, sm_eye_btn],
-    )
-
-    sm_line_in.select(
-        fn=h_eyedrop_pick,
-        inputs=[sm_eye_state, sm_line_in, sm_edge_alpha_state, sm_pixchar_state, sm_line_alpha],
-        outputs=[sm_line_color, sm_eye_state, sm_eye_btn,
-                 sm_lineart_pix, sm_composite_prev, sm_lineart_pix_dl, sm_composite_dl],
-    )
 
 
 if __name__ == "__main__":
