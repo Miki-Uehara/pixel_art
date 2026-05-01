@@ -22,7 +22,7 @@ from steps.step3_remove_bg import remove_white_background, remove_color_backgrou
 from steps.step5_lineart import extract_lineart, base_coat
 from steps.step6_smart_extract import (
     line_mask_from_lineart, build_regions,
-    initial_classify, make_mask, render_overlay, toggle_region_at,
+    initial_classify, make_mask, render_basecoat, toggle_region_at,
     pixelize_with_mask,
 )
 
@@ -187,37 +187,40 @@ def _ensure_same_size(img_a, img_b, img_c):
         c = c.resize((w, h), Image.LANCZOS)
     return a, base, c
 
-def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr):
+def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, fill_color):
     if img_line is None or img_orig is None or img_bgpaint is None:
         return (None, None, None, None, None,
                 "⚠ 3枚すべて（線画／大元／背景色塗り）をアップロードしてください")
     a_raw, b, c = _ensure_same_size(img_line, img_orig, img_bgpaint)
-    # 線画スロットには白背景つきの画像が来るので、まず抽出して RGBA 線画に変換
     a_lineart = extract_lineart(a_raw, int(line_thr))
-    is_line = line_mask_from_lineart(a_lineart, 128)  # extract_lineart は0/255 二値なので閾値は中央でOK
+    is_line = line_mask_from_lineart(a_lineart, 128)
     labels, num = build_regions(is_line)
     region_is_char = initial_classify(labels, num, b, c, int(diff_thr))
+    fc = _hex_to_rgb(fill_color or "#ff88cc")
+    basecoat = render_basecoat(is_line, region_is_char, labels, fill_color=fc)
+    preview = on_checker(basecoat)
     mask = make_mask(labels, region_is_char, is_line)
-    overlay = render_overlay(b, mask)
     line_px = int(is_line.sum())
     char_px = int(mask.sum())
     bg_px = mask.size - char_px
-    info = (f"✅ 自動マスク生成完了！  線画抽出しきい値 {int(line_thr)} / "
+    info = (f"✅ 下塗り生成完了！  線画しきい値 {int(line_thr)} / 差分しきい値 {int(diff_thr)} / "
             f"領域数 {num}  /  線 {line_px}px  /  キャラ {char_px}px  /  背景 {bg_px}px")
-    return labels, is_line, region_is_char, b, overlay, info
+    return labels, is_line, region_is_char, b, preview, info
 
-def h_smart_click(labels_st, is_line_st, region_st, orig_st, evt: gr.SelectData):
+def h_smart_click(labels_st, is_line_st, region_st, orig_st, fill_color, evt: gr.SelectData):
     if labels_st is None or region_st is None or orig_st is None:
-        return None, region_st, "⚠ 先に「自動マスク生成」を実行してください"
+        return None, region_st, "⚠ 先に「下塗り生成」を実行してください"
     x, y = int(evt.index[0]), int(evt.index[1])
     new_region = toggle_region_at(region_st, labels_st, x, y)
+    fc = _hex_to_rgb(fill_color or "#ff88cc")
+    basecoat = render_basecoat(is_line_st, new_region, labels_st, fill_color=fc)
+    preview = on_checker(basecoat)
     mask = make_mask(labels_st, new_region, is_line_st)
-    overlay = render_overlay(as_pil(orig_st), mask)
-    return overlay, new_region, f"🖱 ({x},{y}) の領域を反転  /  キャラ画素 {int(mask.sum())}px"
+    return preview, new_region, f"🖱 ({x},{y}) の領域を反転  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
-def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr):
+def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr, fill_color):
     if labels_st is None or img_bgpaint is None or orig_st is None:
-        return None, None, "⚠ まず自動マスク生成を実行してください"
+        return None, None, "⚠ まず下塗り生成を実行してください"
     base = as_pil(orig_st).convert("RGB")
     ow, oh = base.size
     c = as_pil(img_bgpaint).convert("RGB")
@@ -225,9 +228,11 @@ def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr):
         c = c.resize((ow, oh), Image.LANCZOS)
     num = int(labels_st.max())
     region_is_char = initial_classify(labels_st, num, base, c, int(diff_thr))
+    fc = _hex_to_rgb(fill_color or "#ff88cc")
+    basecoat = render_basecoat(is_line_st, region_is_char, labels_st, fill_color=fc)
+    preview = on_checker(basecoat)
     mask = make_mask(labels_st, region_is_char, is_line_st)
-    overlay = render_overlay(base, mask)
-    return overlay, region_is_char, f"♻ 再判定しました  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
+    return preview, region_is_char, f"♻ 再判定しました  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
 def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
                      dots, scale, colors, sat, bri, con, hue):
@@ -674,22 +679,23 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             with gr.Row():
                 sm_line_thr = gr.Slider(10, 220, value=128, step=1,
                     label="線画抽出しきい値（輝度この値より暗い＝線）",
-                    info="低い：濃い線のみ抽出　高い：薄い線も拾う（標準128）")
+                    info="低い：濃い線のみ　高い：薄い線も拾う（標準128）")
                 sm_bg_tol = gr.Slider(5, 150, value=40, step=1,
                     label="②と③の差分しきい値（背景判定）",
-                    info="②大元と③背景色塗りでこの値以上色が変わったピクセル＝背景。低い：少しの差でも背景　高い：大幅変化のみ背景")
+                    info="②と③でこの値以上色が変わったピクセル＝背景。低い：わずかな差でも背景　高い：大幅変化のみ背景")
+                sm_fill = gr.ColorPicker(value="#ff88cc",
+                    label="🎨 下塗りの色（プレビュー用）")
 
             with gr.Row():
-                sm_build_btn = gr.Button("🔍 自動マスク生成", variant="primary")
-                sm_reset_btn = gr.Button("♻ 現在の許容誤差で再判定", variant="secondary")
+                sm_build_btn = gr.Button("🖌 下塗り生成", variant="primary")
+                sm_reset_btn = gr.Button("♻ 現在の差分しきい値で再判定", variant="secondary")
 
             gr.Markdown(
-                "🖱 **下の画像をクリックすると、その連結領域を「キャラ ↔ 背景」反転できます。**\n"
-                "緑がかった部分が「背景」と判定された領域。塗り残しの島は1クリックで埋まり、"
-                "背景にはみ出した部分も1クリックで除去できます。",
+                "🖱 **下の画像をクリックで、その連結領域を「キャラ ↔ 背景」反転できます。**\n"
+                "塗り残しの島（透過の島）は1クリックで埋まり、背景にはみ出した塗り部分も1クリックで透過に戻ります。",
                 elem_classes="subtitle"
             )
-            sm_overlay = gr.Image(type="pil", label="🎯 マスクプレビュー（クリックで領域トグル）",
+            sm_overlay = gr.Image(type="pil", label="🎯 下塗りプレビュー（チェック柄=透過。クリックで領域トグル）",
                                   height=460, interactive=False)
             sm_info = gr.Textbox(label="📋 ステータス", lines=2, interactive=False,
                                  elem_classes="status-box")
@@ -712,18 +718,18 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
             sm_build_btn.click(
                 fn=h_smart_build,
-                inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol],
+                inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol, sm_fill],
                 outputs=[sm_labels_state, sm_isline_state, sm_region_state,
                          sm_orig_state, sm_overlay, sm_info],
             )
             sm_reset_btn.click(
                 fn=h_smart_reset,
-                inputs=[sm_labels_state, sm_isline_state, sm_orig_state, sm_bg_in, sm_bg_tol],
+                inputs=[sm_labels_state, sm_isline_state, sm_orig_state, sm_bg_in, sm_bg_tol, sm_fill],
                 outputs=[sm_overlay, sm_region_state, sm_info],
             )
             sm_overlay.select(
                 fn=h_smart_click,
-                inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state],
+                inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state, sm_fill],
                 outputs=[sm_overlay, sm_region_state, sm_info],
             )
             sm_final_btn.click(

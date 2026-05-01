@@ -96,19 +96,35 @@ def make_mask(labels: np.ndarray, region_is_char: np.ndarray,
     return char_pixel | is_line
 
 
-def render_overlay(img_orig: Image.Image, mask: np.ndarray,
-                   bg_tint=(80, 220, 80)) -> Image.Image:
-    """背景判定された部分を緑でハイライトしたプレビュー。"""
-    base = np.array(img_orig.convert("RGB"))
-    h, w = base.shape[:2]
-    if mask.shape != (h, w):
-        m_img = Image.fromarray((mask.astype(np.uint8) * 255), "L").resize((w, h), Image.NEAREST)
-        mask = np.array(m_img) >= 128
-    out = base.copy()
-    tint = np.array(bg_tint, dtype=np.float32)
-    bg_pixels = ~mask
-    out[bg_pixels] = (base[bg_pixels].astype(np.float32) * 0.25 + tint * 0.75).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(out, "RGB")
+def render_basecoat(is_line: np.ndarray, region_is_char: np.ndarray,
+                    labels: np.ndarray,
+                    fill_color=(255, 136, 204),
+                    line_color=(20, 20, 20)) -> Image.Image:
+    """下塗りRGBA画像を生成。
+    - 線画ピクセル: 線色で不透明
+    - キャラ領域: 塗り色で不透明
+    - 背景領域: 透明
+    """
+    h, w = is_line.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+
+    char_pixel = region_is_char[labels]
+    only_char = char_pixel & ~is_line
+
+    fc = np.asarray(fill_color, dtype=np.uint8)
+    lc = np.asarray(line_color, dtype=np.uint8)
+
+    rgba[only_char, 0] = fc[0]
+    rgba[only_char, 1] = fc[1]
+    rgba[only_char, 2] = fc[2]
+    rgba[only_char, 3] = 255
+
+    rgba[is_line, 0] = lc[0]
+    rgba[is_line, 1] = lc[1]
+    rgba[is_line, 2] = lc[2]
+    rgba[is_line, 3] = 255
+
+    return Image.fromarray(rgba, "RGBA")
 
 
 def toggle_region_at(region_is_char: np.ndarray, labels: np.ndarray,
