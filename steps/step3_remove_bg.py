@@ -1,6 +1,7 @@
 """
 Step 3: 白背景を透過処理
-- キャラクター内部の白色要素は保持する（flood fill で外側のみ除去）
+- 外周flood fillでキャラクター外側の背景を検出
+- binary_fill_holes でシルエット内部を保護（洋服の白など）
 """
 
 from __future__ import annotations
@@ -8,11 +9,7 @@ from pathlib import Path
 from collections import deque
 import numpy as np
 from PIL import Image
-
-
-def _is_white(pixel: tuple[int, int, int], tolerance: int = 15) -> bool:
-    r, g, b = pixel
-    return r >= 255 - tolerance and g >= 255 - tolerance and b >= 255 - tolerance
+from scipy.ndimage import binary_fill_holes
 
 
 def remove_white_background(
@@ -20,57 +17,55 @@ def remove_white_background(
     tolerance: int = 15,
 ) -> Image.Image:
     """
-    画像の外周から flood fill で白領域を検出し、透過にする。
-    内側（キャラクター内部）の白は保持する。
+    外周flood fill → シルエット内部をfill_holesで保護 → 外側のみ透過。
 
-    Args:
-        image: 入力画像（RGB or RGBA）
-        tolerance: 白判定の許容誤差（0–255）
-
-    Returns:
-        RGBA画像（背景が透過済み）
+    内側に閉じられた白（服の白い部分など）は透過しない。
     """
     img_rgba = image.convert("RGBA")
-    pixels = np.array(img_rgba)
+    pixels = np.array(img_rgba, dtype=np.uint8)
     h, w = pixels.shape[:2]
 
-    visited = np.zeros((h, w), dtype=bool)
-    mask = np.zeros((h, w), dtype=bool)  # True = 背景として除去
+    # 白判定マップ
+    rgb = pixels[:, :, :3].astype(np.int16)
+    is_white = np.all(rgb >= (255 - tolerance), axis=2)
 
+    # 外周flood fill：外側の背景白だけを検出
+    bg_mask = np.zeros((h, w), dtype=bool)
+    visited = np.zeros((h, w), dtype=bool)
     queue: deque[tuple[int, int]] = deque()
 
-    # 四辺のピクセルをシードとして追加
+    def _seed(y: int, x: int) -> None:
+        if not visited[y, x] and is_white[y, x]:
+            visited[y, x] = True
+            bg_mask[y, x] = True
+            queue.append((y, x))
+
     for x in range(w):
-        for y in [0, h - 1]:
-            r, g, b = pixels[y, x, :3]
-            if not visited[y, x] and _is_white((r, g, b), tolerance):
-                queue.append((y, x))
-                visited[y, x] = True
-                mask[y, x] = True
+        _seed(0, x)
+        _seed(h - 1, x)
+    for y in range(1, h - 1):
+        _seed(y, 0)
+        _seed(y, w - 1)
 
-    for y in range(h):
-        for x in [0, w - 1]:
-            r, g, b = pixels[y, x, :3]
-            if not visited[y, x] and _is_white((r, g, b), tolerance):
-                queue.append((y, x))
-                visited[y, x] = True
-                mask[y, x] = True
-
-    # 4近傍 BFS
     while queue:
         cy, cx = queue.popleft()
-        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             ny, nx = cy + dy, cx + dx
-            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx]:
-                r, g, b = pixels[ny, nx, :3]
-                if _is_white((r, g, b), tolerance):
-                    visited[ny, nx] = True
-                    mask[ny, nx] = True
-                    queue.append((ny, nx))
+            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and is_white[ny, nx]:
+                visited[ny, nx] = True
+                bg_mask[ny, nx] = True
+                queue.append((ny, nx))
 
-    # マスク適用：背景白を透過に
-    pixels[mask, 3] = 0
+    # キャラクターのシルエット = 背景でない部分
+    # binary_fill_holes でシルエット内部の「穴」（内側の白）を埋める
+    # → 外側から続いていない白はすべて「内側」として保護される
+    foreground = ~bg_mask
+    foreground_filled = binary_fill_holes(foreground)
 
+    # 透過対象 = 元の背景 かつ シルエットの外側
+    final_bg = ~foreground_filled
+
+    pixels[final_bg, 3] = 0
     return Image.fromarray(pixels, "RGBA")
 
 
@@ -79,11 +74,9 @@ def process_image(
     output_dir: Path,
     tolerance: int = 15,
 ) -> Path:
-    """ファイルパスを受け取って白背景除去を行い保存する。"""
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = input_path.stem
     output_path = output_dir / f"{stem}_nobg.png"
-
     print(f"[Step 3] 白背景除去中: {input_path.name}  (tolerance={tolerance})")
     image = Image.open(input_path)
     result = remove_white_background(image, tolerance=tolerance)
