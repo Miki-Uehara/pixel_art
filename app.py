@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""
-ピクセルアート生成システム - Game UI
-"""
+"""ピクセルアート生成システム - ポップゲームUI"""
 
-import os
-import sys
+import os, sys
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
@@ -13,12 +10,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-_env_path = Path(__file__).parent / ".env"
-if _env_path.exists():
-    for _line in _env_path.read_text(encoding="utf-8").splitlines():
-        if "=" in _line and not _line.startswith("#"):
-            _k, _v = _line.split("=", 1)
-            os.environ.setdefault(_k.strip(), _v.strip())
+_env = Path(__file__).parent / ".env"
+if _env.exists():
+    for ln in _env.read_text(encoding="utf-8").splitlines():
+        if "=" in ln and not ln.startswith("#"):
+            k, v = ln.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
 
 from steps.step2_pixel_snap import pixel_snap, PixelSnapConfig
 from steps.step3_remove_bg import remove_white_background
@@ -29,452 +26,479 @@ FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── カラー調整 ────────────────────────────────────────
 
-def _rgb_to_hsv(arr: np.ndarray) -> np.ndarray:
-    r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
-    maxc = np.maximum(np.maximum(r, g), b)
-    minc = np.minimum(np.minimum(r, g), b)
-    delta = maxc - minc
-    s = np.where(maxc > 1e-6, delta / maxc, 0.0)
-    h = np.zeros_like(r)
-    nz = delta > 1e-6
-    mr, mg, mb = nz & (maxc == r), nz & (maxc == g), nz & (maxc == b)
-    h[mr] = ((g[mr] - b[mr]) / delta[mr]) % 6.0
-    h[mg] = (b[mg] - r[mg]) / delta[mg] + 2.0
-    h[mb] = (r[mb] - g[mb]) / delta[mb] + 4.0
-    return np.stack([(h / 6.0) % 1.0, s, maxc], axis=2)
+def _rgb_to_hsv(a):
+    r,g,b = a[:,:,0],a[:,:,1],a[:,:,2]
+    mx=np.maximum(np.maximum(r,g),b); mn=np.minimum(np.minimum(r,g),b); d=mx-mn
+    s=np.where(mx>1e-6,d/mx,0.)
+    h=np.zeros_like(r); nz=d>1e-6
+    mr,mg,mb=nz&(mx==r),nz&(mx==g),nz&(mx==b)
+    h[mr]=((g[mr]-b[mr])/d[mr])%6.; h[mg]=(b[mg]-r[mg])/d[mg]+2.; h[mb]=(r[mb]-g[mb])/d[mb]+4.
+    return np.stack([(h/6.)%1.,s,mx],axis=2)
 
-
-def _hsv_to_rgb(hsv: np.ndarray) -> np.ndarray:
-    h, s, v = hsv[:,:,0], hsv[:,:,1], hsv[:,:,2]
-    h6 = h * 6.0
-    i = h6.astype(np.int32) % 6
-    f = h6 - np.floor(h6)
-    p, q, t = v*(1-s), v*(1-s*f), v*(1-s*(1-f))
-    rgb = np.zeros((*h.shape, 3), dtype=np.float32)
-    for idx, (rv, gv, bv) in enumerate([(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)]):
-        m = i == idx
-        rgb[m,0]=rv[m]; rgb[m,1]=gv[m]; rgb[m,2]=bv[m]
+def _hsv_to_rgb(hsv):
+    h,s,v=hsv[:,:,0],hsv[:,:,1],hsv[:,:,2]; h6=h*6.; i=h6.astype(np.int32)%6; f=h6-np.floor(h6)
+    p,q,t=v*(1-s),v*(1-s*f),v*(1-s*(1-f))
+    rgb=np.zeros((*h.shape,3),dtype=np.float32)
+    for idx,(rv,gv,bv) in enumerate([(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)]):
+        m=i==idx; rgb[m,0]=rv[m]; rgb[m,1]=gv[m]; rgb[m,2]=bv[m]
     return rgb
 
-
-def adjust_colors(image: Image.Image, saturation=1.0, brightness=1.0,
-                  contrast=1.0, hue_shift=0.0) -> Image.Image:
-    img = image.convert("RGB")
-    if saturation != 1.0:
-        img = ImageEnhance.Color(img).enhance(saturation)
-    if brightness != 1.0:
-        img = ImageEnhance.Brightness(img).enhance(brightness)
-    if contrast != 1.0:
-        img = ImageEnhance.Contrast(img).enhance(contrast)
-    if hue_shift != 0.0:
-        arr = np.array(img).astype(np.float32) / 255.0
-        hsv = _rgb_to_hsv(arr)
-        hsv[:,:,0] = (hsv[:,:,0] + hue_shift / 360.0) % 1.0
-        img = Image.fromarray((_hsv_to_rgb(hsv)*255).clip(0,255).astype(np.uint8), "RGB")
-    return img
+def adjust_colors(img, sat=1., bri=1., con=1., hue=0.):
+    im = img.convert("RGB")
+    if sat!=1.: im=ImageEnhance.Color(im).enhance(sat)
+    if bri!=1.: im=ImageEnhance.Brightness(im).enhance(bri)
+    if con!=1.: im=ImageEnhance.Contrast(im).enhance(con)
+    if hue!=0.:
+        a=np.array(im).astype(np.float32)/255.
+        hsv=_rgb_to_hsv(a); hsv[:,:,0]=(hsv[:,:,0]+hue/360.)%1.
+        im=Image.fromarray((_hsv_to_rgb(hsv)*255).clip(0,255).astype(np.uint8),"RGB")
+    return im
 
 
-# ─── ユーティリティ ────────────────────────────────────
+# ─── ユーティリティ ─────────────────────────────────────
 
-def checkerboard(w: int, h: int, tile: int = 12) -> np.ndarray:
-    xs, ys = np.arange(w)//tile, np.arange(h)//tile
-    v = np.where((xs[None,:]+ys[:,None])%2, 255, 190).astype(np.uint8)
-    return np.stack([v,v,v], axis=2)
+def checker(w,h,tile=14):
+    xs,ys=np.arange(w)//tile,np.arange(h)//tile
+    v=np.where((xs[None,:]+ys[:,None])%2,240,200).astype(np.uint8)
+    return np.stack([v,v,v],axis=2)
 
+def on_checker(rgba):
+    a=np.array(rgba.convert("RGBA")); h,w=a.shape[:2]; b=checker(w,h)
+    al=a[:,:,3:4].astype(np.float32)/255.
+    return Image.fromarray((a[:,:,:3]*al+b*(1-al)).clip(0,255).astype(np.uint8),"RGB")
 
-def composite_checker(img_rgba: Image.Image) -> Image.Image:
-    arr = np.array(img_rgba.convert("RGBA"))
-    h, w = arr.shape[:2]
-    board = checkerboard(w, h)
-    alpha = arr[:,:,3:4].astype(np.float32)/255.0
-    rgb = (arr[:,:,:3].astype(np.float32)*alpha + board*(1-alpha)).clip(0,255).astype(np.uint8)
-    return Image.fromarray(rgb, "RGB")
+def as_pil(x): return Image.fromarray(x) if isinstance(x,np.ndarray) else x
 
+def size_text(img,dots,scale):
+    if img is None: return "⬆ 画像をアップロードしてね！"
+    iw,ih=as_pil(img).size; dh=max(4,round(int(dots)*ih/iw))
+    return (f"📥 入力  {iw}×{ih}px　　"
+            f"🔲 ドット数  {int(dots)}×{dh}　　"
+            f"📤 出力  {int(dots)*int(scale)}×{dh*int(scale)}px　（×{int(scale)} 表示）")
 
-def to_pil(img) -> Image.Image:
-    return Image.fromarray(img) if isinstance(img, np.ndarray) else img
+def do_snap(img,dots,scale,colors):
+    cfg=PixelSnapConfig(k_colors=int(colors),output_scale=int(scale),
+                        fallback_target_segments=int(dots),min_cuts_per_axis=4)
+    return pixel_snap(as_pil(img),cfg)
 
+def do_final(snapped,sat,bri,con,hue,bg,tol):
+    adj=adjust_colors(snapped,float(sat),float(bri),float(con),float(hue))
+    return remove_white_background(adj,int(tol)) if bg else adj.convert("RGBA")
 
-def size_label(image, dot_count: int, display_scale: int) -> str:
-    if image is None:
-        return "► 画像をロードするとサイズが表示されます"
-    img = to_pil(image)
-    iw, ih = img.size
-    dh = max(4, round(dot_count * ih / iw))
-    return (f"INPUT  {iw}×{ih}px"
-            f"  ──►  DOTS  {dot_count}×{dh}"
-            f"  ──►  OUTPUT  {dot_count*display_scale}×{dh*display_scale}px  (×{display_scale})")
-
-
-def run_snap(img: Image.Image, dot_count, display_scale, k_colors) -> Image.Image:
-    cfg = PixelSnapConfig(
-        k_colors=int(k_colors), output_scale=int(display_scale),
-        fallback_target_segments=int(dot_count), min_cuts_per_axis=4,
-    )
-    return pixel_snap(img, cfg)
-
-
-def make_final(snapped, saturation, brightness, contrast, hue_shift, do_bg, tol) -> Image.Image:
-    adj = adjust_colors(snapped, float(saturation), float(brightness), float(contrast), float(hue_shift))
-    return remove_white_background(adj, int(tol)) if do_bg else adj.convert("RGBA")
-
-
-def save_png(rgba: Image.Image, prefix="pixel_art") -> str:
-    p = FINAL_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    rgba.save(p, "PNG")
-    return str(p)
+def save(rgba,prefix="pixel_art"):
+    p=FINAL_DIR/f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    rgba.save(p,"PNG"); return str(p)
 
 
 # ─── ハンドラ ──────────────────────────────────────────
 
-def on_snap(image, dot_count, display_scale, k_colors,
-            saturation, brightness, contrast, hue_shift, do_bg, tol):
-    if image is None:
-        return None, None, "[ IMAGE NOT LOADED ]", gr.update(visible=False), None
-    img = to_pil(image)
-    snapped = run_snap(img, dot_count, display_scale, k_colors)
-    rgba = make_final(snapped, saturation, brightness, contrast, hue_shift, do_bg, tol)
-    preview = composite_checker(rgba)
-    iw, ih = img.size
-    dh = max(4, round(int(dot_count)*ih/iw))
-    info = (f"DOTS: {int(dot_count)}×{dh}  |  "
-            f"OUTPUT: {int(dot_count)*int(display_scale)}×{dh*int(display_scale)}px  |  "
-            f"COLORS: {int(k_colors)}  |  BG ERASE: {'ON' if do_bg else 'OFF'}")
-    path = save_png(rgba)
-    return snapped, preview, info, gr.update(visible=True, value=path), snapped
+def h_snap(img,dots,scale,colors,sat,bri,con,hue,bg,tol):
+    if img is None:
+        return None,None,"⚠ 画像がまだロードされていません！",gr.update(visible=False),None
+    snapped=do_snap(img,dots,scale,colors)
+    rgba=do_final(snapped,sat,bri,con,hue,bg,tol)
+    prev=on_checker(rgba)
+    iw,ih=as_pil(img).size; dh=max(4,round(int(dots)*ih/iw))
+    info=(f"✅ 変換完了！  ドット数 {int(dots)}×{dh}  /  "
+          f"出力 {int(dots)*int(scale)}×{dh*int(scale)}px  /  "
+          f"{int(colors)}色  /  背景透過 {'ON' if bg else 'OFF'}")
+    return snapped,prev,info,gr.update(visible=True,value=save(rgba)),snapped
+
+def h_color(st,sat,bri,con,hue,bg,tol):
+    if st is None: return None
+    return on_checker(do_final(as_pil(st),sat,bri,con,hue,bg,tol))
+
+def h_color_save(st,sat,bri,con,hue,bg,tol):
+    if st is None: return gr.update(visible=False),"⚠ 先に変換実行してください"
+    path=save(do_final(as_pil(st),sat,bri,con,hue,bg,tol))
+    return gr.update(visible=True,value=path),f"💾 保存完了！  {Path(path).name}"
+
+def h_compare(img,colors,scale,sat,bri,con,hue,bg,tol):
+    if img is None: return [],"⚠ 画像がありません"
+    pil=as_pil(img); iw,ih=pil.size; res=[]
+    for d in [64,96,128,192,256]:
+        snapped=do_snap(img,d,scale,colors)
+        rgba=do_final(snapped,sat,bri,con,hue,bg,tol)
+        dh=max(4,round(d*ih/iw))
+        res.append((on_checker(rgba),f"{d}ドット → {d*int(scale)}×{dh*int(scale)}px"))
+    return res,f"✨ 5パターン生成完了！  {int(colors)}色 / ×{int(scale)}表示"
+
+def h_compare_save(img,dot,scale,colors,sat,bri,con,hue,bg,tol):
+    if img is None: return gr.update(visible=False),"⚠ 画像がありません"
+    rgba=do_final(do_snap(img,int(dot),scale,colors),sat,bri,con,hue,bg,tol)
+    path=save(rgba,prefix=f"pixel_{int(dot)}dot")
+    return gr.update(visible=True,value=path),f"💾 保存完了！  {Path(path).name}"
 
 
-def on_color(snapped_state, saturation, brightness, contrast, hue_shift, do_bg, tol):
-    if snapped_state is None:
-        return None
-    rgba = make_final(to_pil(snapped_state), saturation, brightness, contrast, hue_shift, do_bg, tol)
-    return composite_checker(rgba)
-
-
-def on_color_save(snapped_state, saturation, brightness, contrast, hue_shift, do_bg, tol):
-    if snapped_state is None:
-        return gr.update(visible=False), "[ NO DATA — RUN FIRST ]"
-    rgba = make_final(to_pil(snapped_state), saturation, brightness, contrast, hue_shift, do_bg, tol)
-    path = save_png(rgba)
-    return gr.update(visible=True, value=path), f"SAVED ► {Path(path).name}"
-
-
-def on_compare(image, k_colors, display_scale, saturation, brightness, contrast, hue_shift, do_bg, tol):
-    if image is None:
-        return [], "[ IMAGE NOT LOADED ]"
-    img = to_pil(image)
-    results = []
-    for dot in [64, 96, 128, 192, 256]:
-        snapped = run_snap(img, dot, int(display_scale), k_colors)
-        rgba = make_final(snapped, saturation, brightness, contrast, hue_shift, do_bg, tol)
-        iw, ih = img.size
-        dh = max(4, round(dot*ih/iw))
-        results.append((composite_checker(rgba),
-                         f"{dot}dots → {dot*int(display_scale)}×{dh*int(display_scale)}px"))
-    return results, f"5 PATTERNS READY  /  {int(k_colors)} COLORS  /  ×{int(display_scale)} SCALE"
-
-
-def on_compare_save(image, save_dot, display_scale, k_colors,
-                    saturation, brightness, contrast, hue_shift, do_bg, tol):
-    if image is None:
-        return gr.update(visible=False), "[ NO IMAGE ]"
-    rgba = make_final(run_snap(to_pil(image), int(save_dot), int(display_scale), k_colors),
-                      saturation, brightness, contrast, hue_shift, do_bg, tol)
-    path = save_png(rgba, prefix=f"pixel_{int(save_dot)}dot")
-    return gr.update(visible=True, value=path), f"SAVED ► {Path(path).name}"
-
-
-# ─── CSS：ゲームRPGテーマ ──────────────────────────────
+# ─── CSS ──────────────────────────────────────────────
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323:wght@400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DotGothic16&family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap');
 
-/* ── ベース ── */
+/* ══ ベース ══ */
 body, .gradio-container, .main {
-    background: #080818 !important;
-    color: #c8d8ff !important;
-}
-.gradio-container {
     background:
-        radial-gradient(ellipse 80% 40% at 50% 0%, #1a1060 0%, transparent 70%),
-        radial-gradient(ellipse 60% 30% at 80% 100%, #0a2040 0%, transparent 60%),
-        #080818 !important;
+        radial-gradient(ellipse 120% 60% at 20% 0%,  #ffe0f8 0%, transparent 55%),
+        radial-gradient(ellipse 100% 50% at 80% 100%, #e0f0ff 0%, transparent 55%),
+        radial-gradient(ellipse 80%  40% at 50% 50%,  #f0e8ff 0%, transparent 60%),
+        #fdf6ff !important;
+    background-attachment: fixed !important;
+    font-family: 'M PLUS Rounded 1c', sans-serif !important;
 }
 
-/* ── タイトル ── */
+/* ══ タイトル ══ */
 h1 {
-    font-family: 'Press Start 2P', monospace !important;
-    font-size: 18px !important;
-    color: #00e5ff !important;
-    text-shadow: 0 0 8px #00aaff, 0 0 20px #0055ff88 !important;
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 26px !important;
+    color: #cc33aa !important;
+    text-align: center !important;
+    letter-spacing: 4px !important;
+    text-shadow: 3px 3px 0 #ffbbee, 6px 6px 0 #ffddff44 !important;
+    padding: 18px 0 6px !important;
+    margin: 0 !important;
+}
+
+/* ══ サブタイトル ══ */
+.subtitle p {
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 12px !important;
+    color: #aa66cc !important;
     text-align: center !important;
     letter-spacing: 3px !important;
-    padding: 16px 0 8px !important;
+    margin-bottom: 16px !important;
 }
-h2, h3 {
-    font-family: 'VT323', monospace !important;
-    color: #88bbff !important;
+
+/* ══ セクション見出し ══ */
+.section-head p {
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 15px !important;
+    color: #8833cc !important;
+    background: linear-gradient(90deg, #f5e8ff, #ffeeff88) !important;
+    border-left: 5px solid #cc55ee !important;
+    padding: 6px 14px !important;
+    border-radius: 0 8px 8px 0 !important;
+    margin: 6px 0 !important;
     letter-spacing: 2px !important;
 }
 
-/* ── パネル ── */
-.gr-panel, .gr-box, .panel-box {
-    background: #0c0c28 !important;
-    border: 1px solid #2244aa !important;
-    box-shadow: 0 0 12px #1133aa33, inset 0 0 30px #00001488 !important;
-    border-radius: 4px !important;
-}
-
-/* ── ラベル ── */
-label span, .gr-form label {
-    font-family: 'VT323', monospace !important;
-    font-size: 15px !important;
-    color: #6699dd !important;
+/* ══ サイズ情報バー ══ */
+.size-bar p {
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 14px !important;
+    color: #664488 !important;
+    background: linear-gradient(90deg, #fff0ff, #f8f0ff) !important;
+    border: 2px solid #ddaaff !important;
+    border-radius: 10px !important;
+    padding: 10px 18px !important;
+    text-align: center !important;
     letter-spacing: 1px !important;
-    text-transform: uppercase !important;
+    box-shadow: 2px 2px 0 #e8ccff !important;
 }
 
-/* ── スライダー ── */
-input[type=range] { accent-color: #00ccff !important; }
-
-/* ── テキストボックス ── */
-textarea, input[type=text], .gr-textbox textarea {
-    font-family: 'VT323', monospace !important;
-    font-size: 15px !important;
-    background: #060614 !important;
-    border: 1px solid #224488 !important;
-    color: #88ccff !important;
-    border-radius: 2px !important;
+/* ══ パネル ══ */
+.gr-group, .gr-box {
+    background: rgba(255,255,255,0.80) !important;
+    border: 2px solid #e8d0ff !important;
+    border-radius: 14px !important;
+    box-shadow: 4px 4px 0 #ddc8f8, 0 0 20px #cc88ff18 !important;
 }
 
-/* ── ボタン（プライマリ）── */
-button.primary, .gr-button-primary {
-    font-family: 'VT323', monospace !important;
+/* ══ ラベル ══ */
+label > span, .gr-form > label > span {
+    font-family: 'M PLUS Rounded 1c', sans-serif !important;
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    color: #7733bb !important;
+    letter-spacing: 0.5px !important;
+}
+
+/* ══ スライダー ══ */
+input[type=range] {
+    accent-color: #cc44bb !important;
+    height: 5px !important;
+    cursor: pointer !important;
+}
+
+/* ══ チェックボックス ══ */
+input[type=checkbox] {
+    accent-color: #cc44bb !important;
+    width: 18px !important;
+    height: 18px !important;
+}
+
+/* ══ テキストエリア ══ */
+textarea, .gr-textbox textarea {
+    font-family: 'M PLUS Rounded 1c', sans-serif !important;
+    font-size: 14px !important;
+    background: #fdf8ff !important;
+    border: 2px solid #e0c8ff !important;
+    border-radius: 10px !important;
+    color: #553388 !important;
+}
+
+/* ══ ステータスボックス ══ */
+.status-box textarea {
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 13px !important;
+    color: #664499 !important;
+    background: #fef8ff !important;
+    border: 2px dashed #cc99ee !important;
+    border-radius: 10px !important;
+}
+
+/* ══ プライマリボタン（変換実行） ══ */
+button.primary {
+    font-family: 'DotGothic16', monospace !important;
     font-size: 20px !important;
-    letter-spacing: 3px !important;
-    text-transform: uppercase !important;
-    background: linear-gradient(180deg, #3311bb 0%, #220099 50%, #110077 100%) !important;
-    border: 2px solid #6644ff !important;
-    box-shadow: 4px 4px 0 #110044, 0 0 16px #4422ff44 !important;
-    color: #ddaaff !important;
-    border-radius: 2px !important;
-    transition: all 0.08s !important;
-    padding: 10px 28px !important;
-}
-button.primary:hover, .gr-button-primary:hover {
-    background: linear-gradient(180deg, #5533dd 0%, #3311bb 100%) !important;
+    letter-spacing: 4px !important;
+    background: linear-gradient(180deg, #ff88cc 0%, #ee44aa 50%, #cc2299 100%) !important;
+    border: 3px solid #ffbbee !important;
+    box-shadow: 5px 5px 0 #aa1177, 0 0 20px #ff66cc44 !important;
     color: #ffffff !important;
-    box-shadow: 4px 4px 0 #110044, 0 0 24px #6644ff88 !important;
+    border-radius: 12px !important;
+    transition: all 0.07s !important;
+    padding: 14px 40px !important;
+    text-shadow: 1px 1px 0 #aa2288 !important;
 }
-button.primary:active, .gr-button-primary:active {
-    transform: translate(4px, 4px) !important;
-    box-shadow: 0 0 8px #4422ff44 !important;
+button.primary:hover {
+    background: linear-gradient(180deg, #ffaadd 0%, #ff55bb 100%) !important;
+    box-shadow: 5px 5px 0 #aa1177, 0 0 30px #ff66cc66 !important;
+}
+button.primary:active {
+    transform: translate(5px, 5px) !important;
+    box-shadow: 0 0 0 #aa1177 !important;
 }
 
-/* ── ボタン（セカンダリ）── */
-button.secondary, .gr-button-secondary {
-    font-family: 'VT323', monospace !important;
-    font-size: 17px !important;
+/* ══ セカンダリボタン ══ */
+button.secondary {
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 15px !important;
     letter-spacing: 2px !important;
-    background: #0a0a22 !important;
-    border: 2px solid #334477 !important;
-    box-shadow: 3px 3px 0 #000010 !important;
-    color: #6699cc !important;
-    border-radius: 2px !important;
-    transition: all 0.08s !important;
+    background: linear-gradient(180deg, #aaddff 0%, #77bbff 100%) !important;
+    border: 2px solid #bbeeff !important;
+    box-shadow: 4px 4px 0 #4499cc !important;
+    color: #114477 !important;
+    border-radius: 10px !important;
+    transition: all 0.07s !important;
+    padding: 10px 20px !important;
 }
 button.secondary:hover {
-    border-color: #5577aa !important;
-    color: #aaccff !important;
+    background: linear-gradient(180deg, #cceeff 0%, #99ccff 100%) !important;
 }
 button.secondary:active {
-    transform: translate(3px, 3px) !important;
-    box-shadow: none !important;
+    transform: translate(4px, 4px) !important;
+    box-shadow: 0 0 0 #4499cc !important;
 }
 
-/* ── タブ ── */
+/* ══ タブ ══ */
+.tab-nav { border-bottom: 3px solid #e0c0ff !important; }
 .tab-nav button {
-    font-family: 'VT323', monospace !important;
-    font-size: 17px !important;
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 15px !important;
     letter-spacing: 2px !important;
-    color: #5577aa !important;
-    background: #0a0a20 !important;
-    border-bottom: 2px solid transparent !important;
+    color: #9966cc !important;
+    background: transparent !important;
+    padding: 10px 22px !important;
+    border-radius: 10px 10px 0 0 !important;
+    transition: all 0.15s !important;
 }
+.tab-nav button:hover { background: #f5e8ff !important; color: #6633aa !important; }
 .tab-nav button.selected {
-    color: #00e5ff !important;
-    border-bottom: 2px solid #00e5ff !important;
+    color: #cc33aa !important;
+    background: linear-gradient(180deg,#ffe0f8,#fff5ff) !important;
+    border-bottom: 3px solid #cc33aa !important;
+    font-weight: bold !important;
 }
 
-/* ── チェックボックス ── */
-input[type=checkbox] { accent-color: #00ccff !important; }
-
-/* ── アコーディオン ── */
+/* ══ アコーディオン ══ */
 .gr-accordion > .label-wrap {
-    font-family: 'VT323', monospace !important;
-    font-size: 17px !important;
-    color: #55aadd !important;
+    font-family: 'DotGothic16', monospace !important;
+    font-size: 15px !important;
+    color: #9944cc !important;
+    background: linear-gradient(90deg, #f8eeff, #fff5ff) !important;
+    border: 2px solid #e0c8ff !important;
+    border-radius: 10px !important;
+    padding: 10px 18px !important;
     letter-spacing: 2px !important;
-    background: #0c0c28 !important;
-    border: 1px solid #223366 !important;
-    padding: 8px 14px !important;
 }
 
-/* ── サイズ情報 ── */
-.size-info p {
-    font-family: 'VT323', monospace !important;
-    font-size: 17px !important;
-    color: #ffcc44 !important;
-    background: #0c0c1c !important;
-    border: 1px solid #554400 !important;
-    border-left: 4px solid #ffaa00 !important;
-    padding: 6px 12px !important;
-    border-radius: 2px !important;
-    letter-spacing: 1px !important;
+/* ══ ギャラリー ══ */
+.gallery-item {
+    border: 3px solid #e0c8ff !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+    box-shadow: 3px 3px 0 #ddb8ff !important;
 }
+.gallery-item:hover { border-color: #cc55ee !important; }
 
-/* ── ギャラリー ── */
-.gallery-item { border: 1px solid #224488 !important; }
-
-/* ── 画像ウィジェット ── */
+/* ══ 画像ウィジェット枠 ══ */
 .image-container {
-    border: 1px solid #1a2a4a !important;
-    background: #06060f !important;
+    border: 2px solid #e8d0ff !important;
+    border-radius: 12px !important;
+    background: #fdf8ff !important;
 }
 
-/* ── footer非表示 ── */
 footer { display: none !important; }
 """
 
 # ─── UI ───────────────────────────────────────────────
 
-with gr.Blocks(title="PIXEL ART GENERATOR") as demo:
+with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
     snapped_state = gr.State(None)
 
-    gr.Markdown("# ◈  PIXEL ART  GENERATOR  ◈")
-    gr.Markdown(
-        "<center style='font-family:VT323,monospace;color:#445588;"
-        "letter-spacing:2px;font-size:16px'>"
-        "AI ILLUSTRATION  ──►  PIXEL ART  ──►  TRANSPARENT PNG"
-        "</center>"
-    )
+    gr.Markdown("# ✨ ピクセルアート ジェネレーター ✨", elem_classes="title")
+    gr.Markdown("AIイラスト → ピクセルアート → 透過PNG  の自動変換ツール",
+                elem_classes="subtitle")
 
-    # ── INPUT + 基本設定 ───────────────────────────────
-    gr.Markdown("### ▸ LOAD & SETTINGS")
-    with gr.Row():
-        input_image = gr.Image(type="pil", label="◈ INPUT FILE", height=230, scale=1)
+    # ══════════════════════════════════════════════════
+    # 画像 ＋ 基本設定
+    # ══════════════════════════════════════════════════
+    gr.Markdown("📁 **画像をロードして設定しよう**", elem_classes="section-head")
+
+    with gr.Row(equal_height=False):
+
+        # 左：画像アップロード
+        with gr.Column(scale=1, min_width=240):
+            input_image = gr.Image(type="pil", label="📷 入力画像", height=260)
+
+        # 右：設定エリア
         with gr.Column(scale=3):
-            size_info = gr.Markdown("► 画像をロードするとサイズが表示されます",
-                                    elem_classes="size-info")
+
+            size_bar = gr.Markdown("⬆ 画像をアップロードしてね！", elem_classes="size-bar")
+
+            # ── ドット・スケール設定 ──
+            gr.Markdown("🔲 **ドット設定**", elem_classes="section-head")
             with gr.Row():
-                dot_count     = gr.Slider(32, 512, value=64, step=8,
-                                  label="◈ DOTS  ( less = chunky pixel / more = fine detail )")
+                dot_count = gr.Slider(32, 512, value=64, step=8,
+                    label="ドット数（横）— 少ない：粗くてレトロ　多い：細かくてなめらか",
+                    info="元画像の横幅を何マスに分割するかを設定します")
                 display_scale = gr.Slider(1, 16, value=1, step=1,
-                                  label="◈ SCALE  ( px per dot )")
+                    label="表示倍率 — 1ドットを何pxで表示するか",
+                    info="大きくするとドットがくっきり見えます")
+
+            # ── カラー設定 ──
+            gr.Markdown("🎨 **カラー設定**", elem_classes="section-head")
             k_colors = gr.Slider(4, 64, value=16, step=4,
-                         label="◈ PALETTE  ( colors — less = more retro )")
+                label="カラーパレット数 — 少ない：よりドット絵らしく　多い：原画に近い色味",
+                info="色数を制限してドット絵らしさを出します")
+
+            # ── 背景透過設定 ──
+            gr.Markdown("✂ **背景透過設定**", elem_classes="section-head")
             with gr.Row():
-                do_remove_bg = gr.Checkbox(value=True, label="◈ BG ERASE  白背景を透過")
+                do_remove_bg = gr.Checkbox(value=True, label="白背景を透過する")
                 bg_tolerance = gr.Slider(0, 60, value=15, step=1,
-                               label="◈ BG TOLERANCE  ( wider = remove more )")
+                    label="白の許容誤差 — 大きいほど広めに除去（グレーがかった背景にも対応）",
+                    info="0：純白のみ除去　60：かなり広く除去")
 
+    # サイズ情報リアルタイム更新
     for comp in [input_image, dot_count, display_scale]:
-        comp.change(fn=size_label,
+        comp.change(fn=size_text,
                     inputs=[input_image, dot_count, display_scale],
-                    outputs=size_info)
+                    outputs=size_bar)
 
-    # ── カラーチューン（アコーディオン）──────────────
-    with gr.Accordion("▸ COLOR TUNE  ( adjust after conversion )", open=False):
-        gr.Markdown(
-            "<span style='font-family:VT323,monospace;color:#446688;"
-            "font-size:14px;letter-spacing:1px'>"
-            "変換後にスライダーを動かすと即座にプレビューが更新されます</span>"
-        )
+    # ══════════════════════════════════════════════════
+    # カラー調整（アコーディオン）
+    # ══════════════════════════════════════════════════
+    with gr.Accordion("🌈 カラー調整 — 変換後にリアルタイムで色味を変えられます", open=False):
+        gr.Markdown("変換実行後にスライダーを動かすと、すぐにプレビューに反映されます。",
+                    elem_classes="subtitle")
         with gr.Row():
             saturation = gr.Slider(0.0, 3.0, value=1.0, step=0.05,
-                           label="SATURATION  彩度  ( 1.0 = original )")
+                label="彩度 — 低い：グレーっぽく　高い：鮮やかに",
+                info="1.0 = 変化なし")
             brightness = gr.Slider(0.2, 2.0, value=1.0, step=0.05,
-                           label="BRIGHTNESS  明度  ( 1.0 = original )")
+                label="明度 — 低い：暗く　高い：明るく",
+                info="1.0 = 変化なし")
         with gr.Row():
-            contrast   = gr.Slider(0.2, 3.0, value=1.0, step=0.05,
-                           label="CONTRAST  コントラスト  ( 1.0 = original )")
-            hue_shift  = gr.Slider(-180, 180, value=0, step=5,
-                           label="HUE SHIFT  色相回転  ( deg )")
+            contrast = gr.Slider(0.2, 3.0, value=1.0, step=0.05,
+                label="コントラスト — 低い：フラット　高い：メリハリ",
+                info="1.0 = 変化なし")
+            hue_shift = gr.Slider(-180, 180, value=0, step=5,
+                label="色相シフト（度） — プラス方向・マイナス方向に色相が回転",
+                info="0 = 変化なし　±180で色が反転")
 
     color_inputs = [saturation, brightness, contrast, hue_shift, do_remove_bg, bg_tolerance]
 
-    gr.Markdown("---")
-
-    # ── タブ ──────────────────────────────────────────
+    # ══════════════════════════════════════════════════
+    # タブ
+    # ══════════════════════════════════════════════════
     with gr.Tabs():
 
-        # タブ1: 1枚変換
-        with gr.TabItem("▸ CONVERT"):
-            run_btn = gr.Button("▶  EXECUTE  変換実行", variant="primary", size="lg")
+        # ── タブ1：1枚変換 ──
+        with gr.TabItem("🎮 変換する"):
+
+            run_btn = gr.Button("✨  変換実行！", variant="primary", size="lg")
 
             with gr.Row():
-                out_snap  = gr.Image(type="pil", label="◈ PIXEL SNAP",
-                                     height=340, image_mode="RGB")
-                out_final = gr.Image(type="pil", label="◈ FINAL  ( checker = transparent )",
-                                     height=340, image_mode="RGB")
+                out_snap = gr.Image(type="pil",
+                    label="🔲 ピクセルスナップ結果",
+                    height=360, image_mode="RGB")
+                out_final = gr.Image(type="pil",
+                    label="✅ 完成！（チェック柄 = 透過部分）",
+                    height=360, image_mode="RGB")
 
-            info_box = gr.Textbox(label="◈ STATUS", lines=2, interactive=False)
+            info_box = gr.Textbox(label="📋 ステータス", lines=2,
+                                  interactive=False, elem_classes="status-box")
 
             with gr.Row():
-                dl_btn         = gr.DownloadButton("▼ DOWNLOAD  PNG", variant="primary", visible=False)
-                save_color_btn = gr.Button("◈ SAVE WITH COLOR TUNE", variant="secondary")
-                dl_btn2        = gr.DownloadButton("▼ DOWNLOAD  COLOR TUNED",
-                                                    variant="secondary", visible=False)
-            save_info = gr.Textbox(label="", lines=1, interactive=False)
+                dl_btn = gr.DownloadButton("💾 PNGをダウンロード",
+                                           variant="primary", visible=False)
+
+            gr.Markdown("---")
+            gr.Markdown("🌈 **カラー調整して別バージョンを保存**", elem_classes="section-head")
+            with gr.Row():
+                save_color_btn = gr.Button("💾 このカラー設定で保存する", variant="secondary")
+                dl_btn2 = gr.DownloadButton("📥 ダウンロード", variant="secondary", visible=False)
+            save_info = gr.Textbox(label="", lines=1, interactive=False, elem_classes="status-box")
 
             run_btn.click(
-                fn=on_snap,
+                fn=h_snap,
                 inputs=[input_image, dot_count, display_scale, k_colors] + color_inputs,
                 outputs=[out_snap, out_final, info_box, dl_btn, snapped_state],
             )
             for sl in color_inputs:
-                sl.change(fn=on_color,
+                sl.change(fn=h_color,
                           inputs=[snapped_state] + color_inputs,
                           outputs=out_final)
-            save_color_btn.click(
-                fn=on_color_save,
-                inputs=[snapped_state] + color_inputs,
-                outputs=[dl_btn2, save_info],
-            )
+            save_color_btn.click(fn=h_color_save,
+                                 inputs=[snapped_state] + color_inputs,
+                                 outputs=[dl_btn2, save_info])
 
-        # タブ2: 5パターン比較
-        with gr.TabItem("▸ COMPARE  5 PATTERNS"):
+        # ── タブ2：5パターン比較 ──
+        with gr.TabItem("🔍 5パターン比較"):
             gr.Markdown(
-                "<span style='font-family:VT323,monospace;color:#446688;font-size:16px'>"
-                "DOTS: 64 / 96 / 128 / 192 / 256  ──  自動で5パターン生成"
-                "</span>"
+                "**64 / 96 / 128 / 192 / 256 ドット** の5種類を一気に生成して比較できます。\n"
+                "気に入ったパターンを選んで保存しましょう！",
+                elem_classes="subtitle"
             )
-            compare_btn  = gr.Button("▶  GENERATE  5 PATTERNS", variant="primary", size="lg")
-            compare_info = gr.Textbox(label="◈ STATUS", lines=1, interactive=False)
+            compare_btn = gr.Button("✨  5パターンを生成する！", variant="primary", size="lg")
+            compare_info = gr.Textbox(label="📋 ステータス", lines=1,
+                                      interactive=False, elem_classes="status-box")
 
-            gallery = gr.Gallery(label="◈ PATTERN GALLERY  ( click to zoom )",
-                                 columns=5, height=360, object_fit="contain")
-
-            gr.Markdown(
-                "<span style='font-family:VT323,monospace;color:#446688;font-size:16px'>"
-                "▸ SELECT & SAVE"
-                "</span>"
+            gallery = gr.Gallery(
+                label="🖼 比較ギャラリー（クリックで拡大）",
+                columns=5, height=380, object_fit="contain"
             )
+
+            gr.Markdown("---")
+            gr.Markdown("💾 **気に入ったパターンを保存**", elem_classes="section-head")
             with gr.Row():
-                save_dot      = gr.Dropdown(choices=[64, 96, 128, 192, 256], value=128,
-                                            label="◈ DOTS TO SAVE", type="value")
-                comp_save_btn = gr.Button("◈ SAVE SELECTED", variant="secondary")
-            comp_dl   = gr.DownloadButton("▼ DOWNLOAD", variant="secondary", visible=False)
-            comp_info = gr.Textbox(label="", lines=1, interactive=False)
+                save_dot = gr.Dropdown(
+                    choices=[64, 96, 128, 192, 256], value=128,
+                    label="保存するドット数を選択", type="value"
+                )
+                comp_save_btn = gr.Button("💾 選択したパターンを保存", variant="secondary")
+            comp_dl   = gr.DownloadButton("📥 ダウンロード", variant="secondary", visible=False)
+            comp_info = gr.Textbox(label="", lines=1, interactive=False, elem_classes="status-box")
 
             compare_btn.click(
-                fn=on_compare,
+                fn=h_compare,
                 inputs=[input_image, k_colors, display_scale] + color_inputs,
                 outputs=[gallery, compare_info],
             )
             comp_save_btn.click(
-                fn=on_compare_save,
+                fn=h_compare_save,
                 inputs=[input_image, save_dot, display_scale, k_colors] + color_inputs,
                 outputs=[comp_dl, comp_info],
             )
@@ -487,5 +511,10 @@ if __name__ == "__main__":
         inbrowser=True,
         share=False,
         css=CSS,
-        theme=gr.themes.Base(),
+        theme=gr.themes.Soft(
+            primary_hue=gr.themes.colors.pink,
+            secondary_hue=gr.themes.colors.purple,
+            neutral_hue=gr.themes.colors.purple,
+            font=gr.themes.GoogleFont("M PLUS Rounded 1c"),
+        ),
     )
