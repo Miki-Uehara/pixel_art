@@ -130,14 +130,17 @@ def make_mask(labels: np.ndarray, region_is_char: np.ndarray,
 
 def extract_outer_edge_line(is_line: np.ndarray, region_is_char: np.ndarray,
                              labels: np.ndarray, thickness: int = 1) -> np.ndarray:
-    """線画の中で「背景ピクセルに隣接している部分」=キャラ外淵だけを抜き出す。
-    thickness: 背景側からの探索半径(px)。大きいほど外淵として残る線が太くなる。"""
+    """キャラ外淵を抜き出す。
+    thickness: 背景からキャラ内側への探索半径(px)。
+    キャラシルエット（線画含む）のうち、背景に thickness px 以内で
+    隣接するピクセル群を返す。元の線画より太くもできる。"""
     from scipy.ndimage import binary_dilation
     char_pixel = region_is_char[labels]
-    bg_non_line = (~char_pixel) & (~is_line)
+    char_mask = char_pixel | is_line  # キャラ全体（線画含むシルエット）
+    bg = ~char_mask
     t = max(1, int(thickness))
-    dilated_bg = binary_dilation(bg_non_line, iterations=t)
-    return is_line & dilated_bg
+    dilated_bg = binary_dilation(bg, iterations=t)
+    return char_mask & dilated_bg
 
 
 def detect_dominant_line_color(img_orig: Image.Image, is_line: np.ndarray,
