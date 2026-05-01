@@ -23,6 +23,7 @@ from steps.step6_smart_extract import (
     line_mask_from_lineart, build_regions,
     initial_classify, absorb_enclosed_islands, make_mask,
     render_basecoat, toggle_region_at, pixelize_with_mask,
+    extract_outer_edge_line,
 )
 
 FINAL_DIR = Path(__file__).parent / "output" / "final"
@@ -189,7 +190,7 @@ def _pixelize_lineart(is_line: np.ndarray, dots: int, scale: int,
     return Image.fromarray(rgba, "RGBA")
 
 def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
-                     dots, scale, colors, sat, bri, con, hue):
+                     dots, scale, colors, sat, bri, con, hue, edge_thick):
     if labels_st is None or region_st is None or orig_st is None:
         return (None, None, "⚠ 先に「下塗り生成」を実行してください",
                 gr.update(visible=False), gr.update(visible=False))
@@ -200,9 +201,10 @@ def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
     prev = on_checker(rgba)
     path = save(rgba, "smart_pixel")
 
-    line_pix = _pixelize_lineart(is_line_st, int(dots), int(scale))
+    outer_edge = extract_outer_edge_line(is_line_st, region_st, labels_st, int(edge_thick))
+    line_pix = _pixelize_lineart(outer_edge, int(dots), int(scale))
     line_prev = on_checker(line_pix)
-    line_path = save(line_pix, "lineart_pixel")
+    line_path = save(line_pix, "outer_edge_pixel")
 
     iw, ih = rgba.size
     info = (f"✅ ピクセル化＆透過完了！  {iw}×{ih}px  /  "
@@ -434,6 +436,9 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     k_colors = gr.Slider(4, 64, value=16, step=4,
         label="カラーパレット数",
         info="少ない：よりドット絵らしく　多い：原画に近い色味")
+    sm_edge_thick = gr.Slider(1, 30, value=8, step=1,
+        label="外淵の太さ（px・元解像度基準）",
+        info="ピクセル化前の元画像で何px分の縁取りを残すか。大きいほど太い縁取りに")
 
     with gr.Accordion("🌈 カラー調整（彩度・明度・コントラスト・色相）", open=False):
         with gr.Row():
@@ -450,13 +455,13 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     sm_final_btn = gr.Button("🎨 ピクセル化＆透過を実行！", variant="primary", size="lg")
     with gr.Row():
         sm_lineart_pix = gr.Image(type="pil",
-            label="✏ ピクセル化された線画（チェック柄=透過）", height=380)
+            label="✏ ピクセル化された外淵線画（白縁の上書き用・チェック柄=透過）", height=380)
         sm_final_prev = gr.Image(type="pil",
             label="✅ ピクセルアート透過プレビュー（チェック柄）", height=380)
     sm_final_info = gr.Textbox(label="📋 ステータス", lines=1, interactive=False,
                                elem_classes="status-box")
     with gr.Row():
-        sm_lineart_pix_dl = gr.DownloadButton("📥 ピクセル化線画 PNG をダウンロード",
+        sm_lineart_pix_dl = gr.DownloadButton("📥 外淵線画 PNG をダウンロード",
                                               variant="secondary", visible=False)
         sm_dl = gr.DownloadButton("📥 ピクセルアート透過PNG をダウンロード",
                                   variant="secondary", visible=False)
@@ -487,7 +492,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
         fn=h_smart_finalize,
         inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state,
                 dot_count, display_scale, k_colors,
-                saturation, brightness, contrast, hue_shift],
+                saturation, brightness, contrast, hue_shift, sm_edge_thick],
         outputs=[sm_lineart_pix, sm_final_prev, sm_final_info,
                  sm_lineart_pix_dl, sm_dl],
     )
