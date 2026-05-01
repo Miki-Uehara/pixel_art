@@ -22,8 +22,8 @@ from steps.step3_remove_bg import remove_white_background, remove_color_backgrou
 from steps.step5_lineart import extract_lineart, base_coat
 from steps.step6_smart_extract import (
     line_mask_from_lineart, build_regions,
-    initial_classify, make_mask, render_basecoat, toggle_region_at,
-    pixelize_with_mask,
+    initial_classify, absorb_enclosed_islands, make_mask,
+    render_basecoat, toggle_region_at, pixelize_with_mask,
 )
 
 FINAL_DIR = Path(__file__).parent / "output" / "final"
@@ -187,7 +187,7 @@ def _ensure_same_size(img_a, img_b, img_c):
         c = c.resize((w, h), Image.LANCZOS)
     return a, base, c
 
-def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, fill_color):
+def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, island_max, fill_color):
     if img_line is None or img_orig is None or img_bgpaint is None:
         return (None, None, None, None, None,
                 "⚠ 3枚すべて（線画／大元／背景色塗り）をアップロードしてください")
@@ -196,6 +196,9 @@ def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, fill_colo
     is_line = line_mask_from_lineart(a_lineart, 128)
     labels, num = build_regions(is_line)
     region_is_char = initial_classify(labels, num, b, c, int(diff_thr))
+    before_char = int(region_is_char[1:].sum())
+    region_is_char = absorb_enclosed_islands(labels, num, region_is_char, int(island_max))
+    absorbed = int(region_is_char[1:].sum()) - before_char
     fc = _hex_to_rgb(fill_color or "#ff88cc")
     basecoat = render_basecoat(is_line, region_is_char, labels, fill_color=fc)
     preview = on_checker(basecoat)
@@ -204,7 +207,8 @@ def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, fill_colo
     char_px = int(mask.sum())
     bg_px = mask.size - char_px
     info = (f"✅ 下塗り生成完了！  線画しきい値 {int(line_thr)} / 差分しきい値 {int(diff_thr)} / "
-            f"領域数 {num}  /  線 {line_px}px  /  キャラ {char_px}px  /  背景 {bg_px}px")
+            f"領域数 {num}（閉じ島 {absorbed} 個を自動吸収）/ "
+            f"線 {line_px}px / キャラ {char_px}px / 背景 {bg_px}px")
     return labels, is_line, region_is_char, b, preview, info
 
 def h_smart_click(labels_st, is_line_st, region_st, orig_st, fill_color, evt: gr.SelectData):
@@ -218,7 +222,7 @@ def h_smart_click(labels_st, is_line_st, region_st, orig_st, fill_color, evt: gr
     mask = make_mask(labels_st, new_region, is_line_st)
     return preview, new_region, f"🖱 ({x},{y}) の領域を反転  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
-def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr, fill_color):
+def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr, island_max, fill_color):
     if labels_st is None or img_bgpaint is None or orig_st is None:
         return None, None, "⚠ まず下塗り生成を実行してください"
     base = as_pil(orig_st).convert("RGB")
@@ -228,11 +232,14 @@ def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr, fill_co
         c = c.resize((ow, oh), Image.LANCZOS)
     num = int(labels_st.max())
     region_is_char = initial_classify(labels_st, num, base, c, int(diff_thr))
+    before_char = int(region_is_char[1:].sum())
+    region_is_char = absorb_enclosed_islands(labels_st, num, region_is_char, int(island_max))
+    absorbed = int(region_is_char[1:].sum()) - before_char
     fc = _hex_to_rgb(fill_color or "#ff88cc")
     basecoat = render_basecoat(is_line_st, region_is_char, labels_st, fill_color=fc)
     preview = on_checker(basecoat)
     mask = make_mask(labels_st, region_is_char, is_line_st)
-    return preview, region_is_char, f"♻ 再判定しました  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
+    return preview, region_is_char, f"♻ 再判定しました（閉じ島 {absorbed} 個吸収）  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
 def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
                      dots, scale, colors, sat, bri, con, hue):
@@ -685,6 +692,10 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                     info="②と③でこの値以上色が変わったピクセル＝背景。低い：わずかな差でも背景　高い：大幅変化のみ背景")
                 sm_fill = gr.ColorPicker(value="#ff88cc",
                     label="🎨 下塗りの色（プレビュー用）")
+            with gr.Row():
+                sm_island_max = gr.Slider(0, 20000, value=2000, step=100,
+                    label="閉じ島の自動吸収サイズ（px）",
+                    info="線画に囲まれてる背景の島で、このサイズ以下なら自動でキャラ判定にする。0=無効  -1=サイズ無制限で全て吸収。線画の外側には絶対に色は付きません")
 
             with gr.Row():
                 sm_build_btn = gr.Button("🖌 下塗り生成", variant="primary")
@@ -718,13 +729,13 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
             sm_build_btn.click(
                 fn=h_smart_build,
-                inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol, sm_fill],
+                inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol, sm_island_max, sm_fill],
                 outputs=[sm_labels_state, sm_isline_state, sm_region_state,
                          sm_orig_state, sm_overlay, sm_info],
             )
             sm_reset_btn.click(
                 fn=h_smart_reset,
-                inputs=[sm_labels_state, sm_isline_state, sm_orig_state, sm_bg_in, sm_bg_tol, sm_fill],
+                inputs=[sm_labels_state, sm_isline_state, sm_orig_state, sm_bg_in, sm_bg_tol, sm_island_max, sm_fill],
                 outputs=[sm_overlay, sm_region_state, sm_info],
             )
             sm_overlay.select(

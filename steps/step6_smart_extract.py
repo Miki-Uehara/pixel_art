@@ -89,6 +89,38 @@ def initial_classify(labels: np.ndarray, num_regions: int,
     return region_is_char
 
 
+def absorb_enclosed_islands(labels: np.ndarray, num_regions: int,
+                             region_is_char: np.ndarray,
+                             max_island_size: int = 2000) -> np.ndarray:
+    """画像境界に接していない背景領域=線画に囲まれた閉じ島を、キャラ判定に変換する。
+    境界に接する領域（真の外側背景）は絶対に触らない。
+    max_island_size: この値以下のサイズの閉じ島のみ吸収（0なら無効、-1なら全サイズ）。
+    """
+    if max_island_size == 0:
+        return region_is_char
+
+    h, w = labels.shape
+    border_labels = set()
+    border_labels.update(labels[0, :].tolist())
+    border_labels.update(labels[-1, :].tolist())
+    border_labels.update(labels[:, 0].tolist())
+    border_labels.update(labels[:, -1].tolist())
+    border_labels.discard(0)
+
+    sizes = np.bincount(labels.ravel(), minlength=num_regions + 1)
+
+    new_region = region_is_char.copy()
+    for rid in range(1, num_regions + 1):
+        if new_region[rid]:
+            continue  # 既にキャラ
+        if rid in border_labels:
+            continue  # 境界に接している＝真の外側
+        if max_island_size > 0 and sizes[rid] > max_island_size:
+            continue  # 大きすぎる閉じ島は意図的なホールかもなので残す
+        new_region[rid] = True  # 線画内の閉じ島 → キャラに吸収
+    return new_region
+
+
 def make_mask(labels: np.ndarray, region_is_char: np.ndarray,
               is_line: np.ndarray) -> np.ndarray:
     """最終的なキャラマスク（True=キャラ）。線画自身もキャラに含める。"""
