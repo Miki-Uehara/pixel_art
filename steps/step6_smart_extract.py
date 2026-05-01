@@ -18,10 +18,19 @@ def detect_bg_color(img_bg_painted: Image.Image) -> tuple:
     return tuple(int(v) for v in np.median(samples, axis=0))
 
 
-def line_mask_from_lineart(lineart_rgba: Image.Image, line_threshold: int = 80) -> np.ndarray:
-    """線画RGBAから「線のあるピクセル」のboolマスクを返す。"""
-    arr = np.array(lineart_rgba.convert("RGBA"))
-    return arr[:, :, 3] >= line_threshold
+def line_mask_from_lineart(lineart_img: Image.Image, line_threshold: int = 80) -> np.ndarray:
+    """線画から「線のあるピクセル」のboolマスクを返す。
+    RGBA画像でアルファが意味を持てばアルファを、そうでなければ輝度（黒い=線）を使う。"""
+    img = lineart_img.convert("RGBA")
+    arr = np.array(img)
+    alpha = arr[:, :, 3]
+    if int(alpha.min()) == int(alpha.max()):
+        # アルファ情報なし → 黒線on白背景として輝度から推定
+        gray = np.array(img.convert("L"))
+        line_strength = 255 - gray  # 暗いほど線
+    else:
+        line_strength = alpha
+    return line_strength >= int(line_threshold)
 
 
 def build_regions(is_line: np.ndarray):
@@ -54,14 +63,16 @@ def build_regions(is_line: np.ndarray):
 
 
 def initial_classify(labels: np.ndarray, num_regions: int,
+                     img_orig: Image.Image,
                      img_bg_painted: Image.Image,
-                     bg_color: tuple, tol: int = 30) -> np.ndarray:
+                     diff_threshold: int = 40) -> np.ndarray:
     """各領域について「キャラ(True) or 背景(False)」を判定。
-    背景色塗り画像で背景色に近いピクセルが過半数なら背景。"""
-    arr3 = np.array(img_bg_painted.convert("RGB")).astype(np.int32)
-    bg = np.array(bg_color, dtype=np.int32)
-    diff = np.abs(arr3 - bg).max(axis=2)
-    is_bg_pixel = diff <= tol
+    ②大元 と ③背景色塗り画像 のピクセル差分が大きい部分=背景塗り変えられた部分。
+    領域内のそうしたピクセル比率が過半数なら背景判定。"""
+    arr_o = np.array(img_orig.convert("RGB")).astype(np.int32)
+    arr_b = np.array(img_bg_painted.convert("RGB")).astype(np.int32)
+    diff = np.abs(arr_o - arr_b).max(axis=2)
+    is_bg_pixel = diff >= int(diff_threshold)
 
     flat_labels = labels.ravel()
     flat_bg = is_bg_pixel.ravel().astype(np.int64)
@@ -74,7 +85,7 @@ def initial_classify(labels: np.ndarray, num_regions: int,
     ratio = np.zeros_like(bg_count, dtype=np.float64)
     ratio[valid] = bg_count[valid] / total[valid]
     region_is_char[valid] = ratio[valid] < 0.5
-    region_is_char[0] = True  # 念のため
+    region_is_char[0] = True
     return region_is_char
 
 

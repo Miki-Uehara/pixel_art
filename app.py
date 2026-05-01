@@ -21,7 +21,7 @@ from steps.step2_pixel_snap import pixel_snap, PixelSnapConfig
 from steps.step3_remove_bg import remove_white_background, remove_color_background
 from steps.step5_lineart import extract_lineart, base_coat
 from steps.step6_smart_extract import (
-    detect_bg_color, line_mask_from_lineart, build_regions,
+    line_mask_from_lineart, build_regions,
     initial_classify, make_mask, render_overlay, toggle_region_at,
     pixelize_with_mask,
 )
@@ -187,19 +187,23 @@ def _ensure_same_size(img_a, img_b, img_c):
         c = c.resize((w, h), Image.LANCZOS)
     return a, base, c
 
-def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, bg_tol):
+def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr):
     if img_line is None or img_orig is None or img_bgpaint is None:
         return (None, None, None, None, None,
                 "⚠ 3枚すべて（線画／大元／背景色塗り）をアップロードしてください")
-    a, b, c = _ensure_same_size(img_line, img_orig, img_bgpaint)
-    bg_color = detect_bg_color(c)
-    is_line = line_mask_from_lineart(a, int(line_thr))
+    a_raw, b, c = _ensure_same_size(img_line, img_orig, img_bgpaint)
+    # 線画スロットには白背景つきの画像が来るので、まず抽出して RGBA 線画に変換
+    a_lineart = extract_lineart(a_raw, int(line_thr))
+    is_line = line_mask_from_lineart(a_lineart, 128)  # extract_lineart は0/255 二値なので閾値は中央でOK
     labels, num = build_regions(is_line)
-    region_is_char = initial_classify(labels, num, c, bg_color, int(bg_tol))
+    region_is_char = initial_classify(labels, num, b, c, int(diff_thr))
     mask = make_mask(labels, region_is_char, is_line)
     overlay = render_overlay(b, mask)
-    info = (f"✅ 自動マスク生成完了！  領域数 {num}  /  "
-            f"検出背景色 RGB{bg_color}  /  キャラ画素 {int(mask.sum())}px")
+    line_px = int(is_line.sum())
+    char_px = int(mask.sum())
+    bg_px = mask.size - char_px
+    info = (f"✅ 自動マスク生成完了！  線画抽出しきい値 {int(line_thr)} / "
+            f"領域数 {num}  /  線 {line_px}px  /  キャラ {char_px}px  /  背景 {bg_px}px")
     return labels, is_line, region_is_char, b, overlay, info
 
 def h_smart_click(labels_st, is_line_st, region_st, orig_st, evt: gr.SelectData):
@@ -211,19 +215,19 @@ def h_smart_click(labels_st, is_line_st, region_st, orig_st, evt: gr.SelectData)
     overlay = render_overlay(as_pil(orig_st), mask)
     return overlay, new_region, f"🖱 ({x},{y}) の領域を反転  /  キャラ画素 {int(mask.sum())}px"
 
-def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, bg_tol):
+def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr):
     if labels_st is None or img_bgpaint is None or orig_st is None:
         return None, None, "⚠ まず自動マスク生成を実行してください"
+    base = as_pil(orig_st).convert("RGB")
+    ow, oh = base.size
     c = as_pil(img_bgpaint).convert("RGB")
-    ow, oh = as_pil(orig_st).size
     if c.size != (ow, oh):
         c = c.resize((ow, oh), Image.LANCZOS)
     num = int(labels_st.max())
-    bg_color = detect_bg_color(c)
-    region_is_char = initial_classify(labels_st, num, c, bg_color, int(bg_tol))
+    region_is_char = initial_classify(labels_st, num, base, c, int(diff_thr))
     mask = make_mask(labels_st, region_is_char, is_line_st)
-    overlay = render_overlay(as_pil(orig_st), mask)
-    return overlay, region_is_char, f"♻ リセットしました  /  キャラ画素 {int(mask.sum())}px"
+    overlay = render_overlay(base, mask)
+    return overlay, region_is_char, f"♻ 再判定しました  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
 def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
                      dots, scale, colors, sat, bri, con, hue):
@@ -663,17 +667,17 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             gr.Markdown("📁 **3枚アップロード（同じサイズ推奨／自動リサイズあり）**",
                         elem_classes="section-head")
             with gr.Row():
-                sm_line_in = gr.Image(type="pil", label="① 線画", height=260)
+                sm_line_in = gr.Image(type="pil", label="① 線画用画像（白背景つきでOK・自動で線画抽出します）", height=260)
                 sm_orig_in = gr.Image(type="pil", label="② 大元の白背景キャラ（最終ソース）", height=260)
                 sm_bg_in   = gr.Image(type="pil", label="③ 背景だけ色を変えた画像", height=260)
 
             with gr.Row():
-                sm_line_thr = gr.Slider(10, 200, value=80, step=5,
-                    label="線画の線判定しきい値",
-                    info="低い：細い線も拾う　高い：濃い線のみ")
-                sm_bg_tol = gr.Slider(0, 80, value=30, step=1,
-                    label="背景色の許容誤差",
-                    info="③の四隅から背景色を自動検出。値を上げるとより広く背景判定")
+                sm_line_thr = gr.Slider(10, 220, value=128, step=1,
+                    label="線画抽出しきい値（輝度この値より暗い＝線）",
+                    info="低い：濃い線のみ抽出　高い：薄い線も拾う（標準128）")
+                sm_bg_tol = gr.Slider(5, 150, value=40, step=1,
+                    label="②と③の差分しきい値（背景判定）",
+                    info="②大元と③背景色塗りでこの値以上色が変わったピクセル＝背景。低い：少しの差でも背景　高い：大幅変化のみ背景")
 
             with gr.Row():
                 sm_build_btn = gr.Button("🔍 自動マスク生成", variant="primary")
