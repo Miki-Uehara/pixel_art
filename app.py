@@ -26,8 +26,30 @@ from steps.step6_smart_extract import (
     extract_outer_edge_line, detect_dominant_line_color,
 )
 
-FINAL_DIR = Path(__file__).parent / "output" / "final"
-FINAL_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_ROOT = Path(__file__).parent / "output"
+OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def save_versioned(img: Image.Image, type_name: str) -> str:
+    """output/YYYYMMDD/YYYYMMDD_pixelart_NNN_<type>.png の連番で保存。"""
+    today = datetime.now().strftime("%Y%m%d")
+    out_dir = OUTPUT_ROOT / today
+    out_dir.mkdir(parents=True, exist_ok=True)
+    nums = []
+    for p in out_dir.glob(f"{today}_pixelart_*_{type_name}.png"):
+        parts = p.stem.split("_")
+        if len(parts) >= 4 and parts[2].isdigit():
+            nums.append(int(parts[2]))
+    n = (max(nums) + 1) if nums else 1
+    path = out_dir / f"{today}_pixelart_{n:03d}_{type_name}.png"
+    img.save(path, "PNG")
+    return str(path)
+
+
+def on_black(rgba: Image.Image) -> Image.Image:
+    """RGBAを真っ黒背景に合成したRGB画像を返す。"""
+    base = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+    return Image.alpha_composite(base, rgba.convert("RGBA")).convert("RGB")
 
 
 # ─── カラー調整 ────────────────────────────────────────
@@ -105,12 +127,6 @@ def _hex_to_rgb(hex_color: str) -> tuple:
             return tuple(max(0, min(255, int(float(nums[i])))) for i in range(3))
     return (20, 20, 20)
 
-def save(img, prefix="pixel_art"):
-    p = FINAL_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
-    img.save(p, "PNG")
-    return str(p)
-
-
 # ─── スマート抽出ハンドラ ────────────────────────────────
 
 def _ensure_same_size(img_a, img_b, img_c):
@@ -128,10 +144,9 @@ def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, island_ma
     if img_line is None or img_orig is None or img_bgpaint is None:
         return (None, None, None, None, None,
                 "⚠ 3枚すべて（線画／大元／背景色塗り）をアップロードしてください",
-                gr.update(visible=False))
+                None)
     a_raw, b, c = _ensure_same_size(img_line, img_orig, img_bgpaint)
     a_lineart = extract_lineart(a_raw, int(line_thr))
-    lineart_path = save(a_lineart, "lineart_extracted")
     is_line = line_mask_from_lineart(a_lineart, 128)
     labels, num = build_regions(is_line)
     region_is_char = initial_classify(labels, num, b, c, int(diff_thr))
@@ -149,7 +164,7 @@ def h_smart_build(img_line, img_orig, img_bgpaint, line_thr, diff_thr, island_ma
             f"領域数 {num}（閉じ島 {absorbed} 個を自動吸収）/ "
             f"線 {line_px}px / キャラ {char_px}px / 背景 {bg_px}px")
     return (labels, is_line, region_is_char, b, preview, info,
-            gr.update(visible=True, value=lineart_path))
+            a_lineart)
 
 def h_smart_click(labels_st, is_line_st, region_st, orig_st, fill_color, evt: gr.SelectData):
     if labels_st is None or region_st is None or orig_st is None:
@@ -213,14 +228,12 @@ def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
                      line_alpha):
     if labels_st is None or region_st is None or orig_st is None:
         return (None, None, None, "⚠ 先に「下塗り生成」を実行してください",
-                gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-                gr.update(), None, None)
+                gr.update(), None, None, None)
     mask = make_mask(labels_st, region_st, is_line_st)
     base = as_pil(orig_st)
     adjusted = adjust_colors(base, float(sat), float(bri), float(con), float(hue))
     rgba = pixelize_with_mask(adjusted, mask, do_snap, int(dots), int(scale), int(colors))
     prev = on_checker(rgba)
-    path = save(rgba, "smart_pixel")
 
     outer_edge = extract_outer_edge_line(is_line_st, region_st, labels_st, int(edge_thick))
     edge_alpha = _pixelize_line_alpha(outer_edge, int(dots), int(scale))
@@ -229,36 +242,34 @@ def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
     dom_hex = _rgb_to_hex(dom)
     line_img = _colorize_edge(edge_alpha, dom, float(line_alpha))
     line_prev = on_checker(line_img)
-    line_path = save(line_img, "outer_edge_pixel")
 
     composite = _composite_line_over(rgba, line_img)
-    comp_prev = on_checker(composite)
-    comp_path = save(composite, "smart_pixel_composite")
+    comp_prev = on_black(composite)
 
     iw, ih = rgba.size
     info = (f"✅ ピクセル化＆透過完了！  {iw}×{ih}px  /  {int(colors)}色  /  ×{int(scale)}表示  /  "
             f"検出された線色: {dom_hex}")
     return (line_prev, prev, comp_prev, info,
-            gr.update(visible=True, value=line_path),
-            gr.update(visible=True, value=path),
-            gr.update(visible=True, value=comp_path),
             gr.update(value=dom_hex),
-            edge_alpha, rgba)
+            edge_alpha, rgba, line_img, composite)
 
 
 def h_recolor_line(edge_alpha_st, pixchar_st, line_color, line_alpha):
     if edge_alpha_st is None or pixchar_st is None:
-        return None, None, gr.update(), gr.update()
+        return None, None, None, None
     color = _hex_to_rgb(line_color or "#141414")
     line_img = _colorize_edge(edge_alpha_st, color, float(line_alpha))
     line_prev = on_checker(line_img)
-    line_path = save(line_img, "outer_edge_pixel")
     composite = _composite_line_over(pixchar_st, line_img)
-    comp_prev = on_checker(composite)
-    comp_path = save(composite, "smart_pixel_composite")
-    return (line_prev, comp_prev,
-            gr.update(visible=True, value=line_path),
-            gr.update(visible=True, value=comp_path))
+    comp_prev = on_black(composite)
+    return line_prev, comp_prev, line_img, composite
+
+
+def h_save(pil_img, type_name):
+    if pil_img is None:
+        return gr.update(value="⚠ まだ画像が生成されていません", visible=True)
+    path = save_versioned(pil_img, type_name)
+    return gr.update(value=f"✅ 保存しました：`{path}`", visible=True)
 
 
 
@@ -421,6 +432,9 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     sm_orig_state   = gr.State(None)
     sm_edge_alpha_state = gr.State(None)
     sm_pixchar_state = gr.State(None)
+    sm_lineart_img_state = gr.State(None)
+    sm_line_img_state    = gr.State(None)
+    sm_comp_img_state    = gr.State(None)
 
     gr.Markdown("# ✨ スマート抽出 ピクセルアート ✨", elem_classes="title")
     gr.Markdown("線画＋背景色画像で正確な下塗りを作って、大元画像をピクセル化＆透過",
@@ -467,8 +481,9 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
         height=460, interactive=False)
     sm_info = gr.Textbox(label="📋 ステータス", lines=2, interactive=False,
                          elem_classes="status-box")
-    sm_lineart_dl = gr.DownloadButton("📥 線画抽出後の画像をダウンロード",
-                                      variant="secondary", visible=False)
+    with gr.Row():
+        sm_lineart_save = gr.Button("💾 線画抽出後の画像を保存", variant="secondary")
+    sm_lineart_save_status = gr.Markdown(visible=False, elem_classes="status-box")
 
     # ══════════════════════════════════════════════════
     # 3. ピクセル化＆透過
@@ -522,15 +537,13 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                                elem_classes="status-box")
 
     sm_composite_prev = gr.Image(type="pil",
-        label="🌟 最終合成（線画＋透過キャラ・チェック柄=透過）", height=460)
+        label="🌟 最終合成（線画＋透過キャラ・背景=黒）", height=460)
 
     with gr.Row():
-        sm_lineart_pix_dl = gr.DownloadButton("📥 外淵線画 PNG をダウンロード",
-                                              variant="secondary", visible=False)
-        sm_dl = gr.DownloadButton("📥 ピクセルアート透過PNG をダウンロード",
-                                  variant="secondary", visible=False)
-        sm_composite_dl = gr.DownloadButton("📥 最終合成PNG をダウンロード",
-                                            variant="secondary", visible=False)
+        sm_lineart_pix_save = gr.Button("💾 外淵線画PNGを保存", variant="secondary")
+        sm_save = gr.Button("💾 ピクセルアート透過PNGを保存", variant="secondary")
+        sm_composite_save = gr.Button("💾 最終合成PNGを保存", variant="secondary")
+    sm_save_status = gr.Markdown(visible=False, elem_classes="status-box")
 
     # ── ハンドラ配線 ────────────────────────────
     for comp in [sm_orig_in, dot_count, display_scale]:
@@ -542,7 +555,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
         fn=h_smart_build,
         inputs=[sm_line_in, sm_orig_in, sm_bg_in, sm_line_thr, sm_bg_tol, sm_island_max, sm_fill],
         outputs=[sm_labels_state, sm_isline_state, sm_region_state,
-                 sm_orig_state, sm_overlay, sm_info, sm_lineart_dl],
+                 sm_orig_state, sm_overlay, sm_info, sm_lineart_img_state],
     )
     sm_reset_btn.click(
         fn=h_smart_reset,
@@ -561,16 +574,33 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                 saturation, brightness, contrast, hue_shift, sm_edge_thick,
                 sm_line_alpha],
         outputs=[sm_lineart_pix, sm_final_prev, sm_composite_prev, sm_final_info,
-                 sm_lineart_pix_dl, sm_dl, sm_composite_dl,
-                 sm_line_color, sm_edge_alpha_state, sm_pixchar_state],
+                 sm_line_color, sm_edge_alpha_state, sm_pixchar_state,
+                 sm_line_img_state, sm_comp_img_state],
     )
 
     for comp in [sm_line_color, sm_line_alpha]:
         comp.change(
             fn=h_recolor_line,
             inputs=[sm_edge_alpha_state, sm_pixchar_state, sm_line_color, sm_line_alpha],
-            outputs=[sm_lineart_pix, sm_composite_prev, sm_lineart_pix_dl, sm_composite_dl],
+            outputs=[sm_lineart_pix, sm_composite_prev, sm_line_img_state, sm_comp_img_state],
         )
+
+    sm_lineart_save.click(
+        fn=lambda i: h_save(i, "lineart"),
+        inputs=[sm_lineart_img_state], outputs=[sm_lineart_save_status],
+    )
+    sm_lineart_pix_save.click(
+        fn=lambda i: h_save(i, "outerline"),
+        inputs=[sm_line_img_state], outputs=[sm_save_status],
+    )
+    sm_save.click(
+        fn=lambda i: h_save(i, "character"),
+        inputs=[sm_pixchar_state], outputs=[sm_save_status],
+    )
+    sm_composite_save.click(
+        fn=lambda i: h_save(i, "composite"),
+        inputs=[sm_comp_img_state], outputs=[sm_save_status],
+    )
 
 
 
