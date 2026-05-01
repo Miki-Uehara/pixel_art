@@ -23,7 +23,7 @@ from steps.step6_smart_extract import (
     line_mask_from_lineart, build_regions,
     initial_classify, absorb_enclosed_islands, make_mask,
     render_basecoat, toggle_region_at, pixelize_with_mask,
-    extract_outer_edge_line,
+    extract_outer_edge_line, detect_dominant_line_color,
 )
 
 FINAL_DIR = Path(__file__).parent / "output" / "final"
@@ -168,32 +168,40 @@ def h_smart_reset(labels_st, is_line_st, orig_st, img_bgpaint, diff_thr, island_
     mask = make_mask(labels_st, region_is_char, is_line_st)
     return preview, region_is_char, f"♻ 再判定しました（閉じ島 {absorbed} 個吸収）  /  キャラ {int(mask.sum())}px / 背景 {mask.size - int(mask.sum())}px"
 
-def _pixelize_lineart(is_line: np.ndarray, dots: int, scale: int,
-                      line_color=(20, 20, 20)) -> Image.Image:
-    """線画(boolマスク)を指定ドット数でピクセル化したRGBA画像を返す。"""
+def _pixelize_line_alpha(is_line: np.ndarray, dots: int, scale: int) -> np.ndarray:
+    """線画(boolマスク)を指定ドット数でピクセル化したアルファ配列(uint8)を返す。"""
     h, w = is_line.shape
     dw = int(dots)
     dh = max(4, round(dw * h / w))
     sw, sh = dw * int(scale), dh * int(scale)
-
     line_img = Image.fromarray((is_line.astype(np.uint8) * 255), "L")
     small = line_img.resize((dw, dh), Image.BILINEAR)
     small_bin = np.where(np.array(small) >= 128, 255, 0).astype(np.uint8)
-    big = np.array(Image.fromarray(small_bin, "L").resize((sw, sh), Image.NEAREST))
+    return np.array(Image.fromarray(small_bin, "L").resize((sw, sh), Image.NEAREST))
 
-    rgba = np.zeros((sh, sw, 4), dtype=np.uint8)
-    opaque = big > 0
-    rgba[opaque, 0] = line_color[0]
-    rgba[opaque, 1] = line_color[1]
-    rgba[opaque, 2] = line_color[2]
-    rgba[:, :, 3] = big
+def _colorize_edge(edge_alpha: np.ndarray, color: tuple, opacity_pct: float) -> Image.Image:
+    h, w = edge_alpha.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    rgba[..., 0], rgba[..., 1], rgba[..., 2] = color[0], color[1], color[2]
+    rgba[..., 3] = (edge_alpha.astype(np.float32) * (float(opacity_pct) / 100.0)).clip(0, 255).astype(np.uint8)
     return Image.fromarray(rgba, "RGBA")
 
+def _composite_line_over(pixchar: Image.Image, line_img: Image.Image) -> Image.Image:
+    base = pixchar.convert("RGBA")
+    if line_img.size != base.size:
+        line_img = line_img.resize(base.size, Image.NEAREST)
+    return Image.alpha_composite(base, line_img)
+
+def _rgb_to_hex(rgb: tuple) -> str:
+    return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
 def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
-                     dots, scale, colors, sat, bri, con, hue, edge_thick):
+                     dots, scale, colors, sat, bri, con, hue, edge_thick,
+                     line_alpha):
     if labels_st is None or region_st is None or orig_st is None:
-        return (None, None, "⚠ 先に「下塗り生成」を実行してください",
-                gr.update(visible=False), gr.update(visible=False))
+        return (None, None, None, "⚠ 先に「下塗り生成」を実行してください",
+                gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+                gr.update(), None, None)
     mask = make_mask(labels_st, region_st, is_line_st)
     base = as_pil(orig_st)
     adjusted = adjust_colors(base, float(sat), float(bri), float(con), float(hue))
@@ -202,16 +210,66 @@ def h_smart_finalize(labels_st, is_line_st, region_st, orig_st,
     path = save(rgba, "smart_pixel")
 
     outer_edge = extract_outer_edge_line(is_line_st, region_st, labels_st, int(edge_thick))
-    line_pix = _pixelize_lineart(outer_edge, int(dots), int(scale))
-    line_prev = on_checker(line_pix)
-    line_path = save(line_pix, "outer_edge_pixel")
+    edge_alpha = _pixelize_line_alpha(outer_edge, int(dots), int(scale))
+
+    dom = detect_dominant_line_color(base, is_line_st)
+    dom_hex = _rgb_to_hex(dom)
+    line_img = _colorize_edge(edge_alpha, dom, float(line_alpha))
+    line_prev = on_checker(line_img)
+    line_path = save(line_img, "outer_edge_pixel")
+
+    composite = _composite_line_over(rgba, line_img)
+    comp_prev = on_checker(composite)
+    comp_path = save(composite, "smart_pixel_composite")
 
     iw, ih = rgba.size
-    info = (f"✅ ピクセル化＆透過完了！  {iw}×{ih}px  /  "
-            f"{int(colors)}色  /  ×{int(scale)}表示")
-    return (line_prev, prev, info,
+    info = (f"✅ ピクセル化＆透過完了！  {iw}×{ih}px  /  {int(colors)}色  /  ×{int(scale)}表示  /  "
+            f"検出された線色: {dom_hex}")
+    return (line_prev, prev, comp_prev, info,
             gr.update(visible=True, value=line_path),
-            gr.update(visible=True, value=path))
+            gr.update(visible=True, value=path),
+            gr.update(visible=True, value=comp_path),
+            gr.update(value=dom_hex),
+            edge_alpha, rgba)
+
+
+def h_recolor_line(edge_alpha_st, pixchar_st, line_color, line_alpha):
+    if edge_alpha_st is None or pixchar_st is None:
+        return None, None, gr.update(), gr.update()
+    color = _hex_to_rgb(line_color or "#141414")
+    line_img = _colorize_edge(edge_alpha_st, color, float(line_alpha))
+    line_prev = on_checker(line_img)
+    line_path = save(line_img, "outer_edge_pixel")
+    composite = _composite_line_over(pixchar_st, line_img)
+    comp_prev = on_checker(composite)
+    comp_path = save(composite, "smart_pixel_composite")
+    return (line_prev, comp_prev,
+            gr.update(visible=True, value=line_path),
+            gr.update(visible=True, value=comp_path))
+
+
+def h_toggle_eyedropper(active):
+    new_active = not bool(active)
+    label = "🎯 スポイトON（線画用画像をクリック）" if new_active else "💧 スポイトで色を取る"
+    return new_active, gr.update(value=label)
+
+
+def h_eyedrop_pick(eye_active, img_line, edge_alpha_st, pixchar_st, line_alpha,
+                   evt: gr.SelectData):
+    if not eye_active or img_line is None:
+        return (gr.update(), False, gr.update(value="💧 スポイトで色を取る"),
+                gr.update(), gr.update(), gr.update(), gr.update())
+    arr = np.array(as_pil(img_line).convert("RGB"))
+    h, w = arr.shape[:2]
+    x = int(np.clip(evt.index[0], 0, w - 1))
+    y = int(np.clip(evt.index[1], 0, h - 1))
+    rgb = tuple(int(v) for v in arr[y, x])
+    hex_color = _rgb_to_hex(rgb)
+    line_prev, comp_prev, line_dl, comp_dl = h_recolor_line(
+        edge_alpha_st, pixchar_st, hex_color, line_alpha)
+    return (gr.update(value=hex_color), False,
+            gr.update(value="💧 スポイトで色を取る"),
+            line_prev, comp_prev, line_dl, comp_dl)
 
 
 # ─── CSS ──────────────────────────────────────────────
@@ -370,6 +428,9 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     sm_isline_state = gr.State(None)
     sm_region_state = gr.State(None)
     sm_orig_state   = gr.State(None)
+    sm_edge_alpha_state = gr.State(None)
+    sm_pixchar_state = gr.State(None)
+    sm_eye_state     = gr.State(False)
 
     gr.Markdown("# ✨ スマート抽出 ピクセルアート ✨", elem_classes="title")
     gr.Markdown("線画＋背景色画像で正確な下塗りを作って、大元画像をピクセル化＆透過",
@@ -455,16 +516,32 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     sm_final_btn = gr.Button("🎨 ピクセル化＆透過を実行！", variant="primary", size="lg")
     with gr.Row():
         sm_lineart_pix = gr.Image(type="pil",
-            label="✏ ピクセル化された外淵線画（白縁の上書き用・チェック柄=透過）", height=380)
+            label="✏ 外淵線画（馴染ませた色・チェック柄=透過）", height=380)
         sm_final_prev = gr.Image(type="pil",
             label="✅ ピクセルアート透過プレビュー（チェック柄）", height=380)
+
+    gr.Markdown("🎨 **線画の色を調整**（実行後、自動で元イラストの主要線色を検出）",
+                elem_classes="section-head")
+    with gr.Row():
+        sm_line_color = gr.ColorPicker(value="#141414",
+            label="線画カラー（自動検出後に変更可）")
+        sm_line_alpha = gr.Slider(0, 100, value=100, step=1,
+            label="線画の不透明度 (%)", info="100=くっきり / 下げるほど透けて馴染む")
+        sm_eye_btn = gr.Button("💧 スポイトで色を取る", variant="secondary")
+
     sm_final_info = gr.Textbox(label="📋 ステータス", lines=1, interactive=False,
                                elem_classes="status-box")
+
+    sm_composite_prev = gr.Image(type="pil",
+        label="🌟 最終合成（線画＋透過キャラ・チェック柄=透過）", height=460)
+
     with gr.Row():
         sm_lineart_pix_dl = gr.DownloadButton("📥 外淵線画 PNG をダウンロード",
                                               variant="secondary", visible=False)
         sm_dl = gr.DownloadButton("📥 ピクセルアート透過PNG をダウンロード",
                                   variant="secondary", visible=False)
+        sm_composite_dl = gr.DownloadButton("📥 最終合成PNG をダウンロード",
+                                            variant="secondary", visible=False)
 
     # ── ハンドラ配線 ────────────────────────────
     for comp in [sm_orig_in, dot_count, display_scale]:
@@ -492,9 +569,31 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
         fn=h_smart_finalize,
         inputs=[sm_labels_state, sm_isline_state, sm_region_state, sm_orig_state,
                 dot_count, display_scale, k_colors,
-                saturation, brightness, contrast, hue_shift, sm_edge_thick],
-        outputs=[sm_lineart_pix, sm_final_prev, sm_final_info,
-                 sm_lineart_pix_dl, sm_dl],
+                saturation, brightness, contrast, hue_shift, sm_edge_thick,
+                sm_line_alpha],
+        outputs=[sm_lineart_pix, sm_final_prev, sm_composite_prev, sm_final_info,
+                 sm_lineart_pix_dl, sm_dl, sm_composite_dl,
+                 sm_line_color, sm_edge_alpha_state, sm_pixchar_state],
+    )
+
+    for comp in [sm_line_color, sm_line_alpha]:
+        comp.change(
+            fn=h_recolor_line,
+            inputs=[sm_edge_alpha_state, sm_pixchar_state, sm_line_color, sm_line_alpha],
+            outputs=[sm_lineart_pix, sm_composite_prev, sm_lineart_pix_dl, sm_composite_dl],
+        )
+
+    sm_eye_btn.click(
+        fn=h_toggle_eyedropper,
+        inputs=[sm_eye_state],
+        outputs=[sm_eye_state, sm_eye_btn],
+    )
+
+    sm_line_in.select(
+        fn=h_eyedrop_pick,
+        inputs=[sm_eye_state, sm_line_in, sm_edge_alpha_state, sm_pixchar_state, sm_line_alpha],
+        outputs=[sm_line_color, sm_eye_state, sm_eye_btn,
+                 sm_lineart_pix, sm_composite_prev, sm_lineart_pix_dl, sm_composite_dl],
     )
 
 

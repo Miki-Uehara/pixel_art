@@ -140,6 +140,24 @@ def extract_outer_edge_line(is_line: np.ndarray, region_is_char: np.ndarray,
     return is_line & dilated_bg
 
 
+def detect_dominant_line_color(img_orig: Image.Image, is_line: np.ndarray,
+                                k: int = 8) -> tuple:
+    """元イラストの線画ピクセル位置から、最も使われている色をk-mean系量子化で推定。"""
+    arr = np.array(img_orig.convert("RGB"))
+    h, w = arr.shape[:2]
+    if is_line.shape != (h, w):
+        m_img = Image.fromarray((is_line.astype(np.uint8) * 255), "L").resize((w, h), Image.NEAREST)
+        is_line = np.array(m_img) >= 128
+    pixels = arr[is_line]
+    if len(pixels) < k:
+        return (20, 20, 20)
+    sample = Image.fromarray(pixels.reshape(-1, 1, 3), "RGB")
+    pal_img = sample.quantize(colors=k, method=Image.Quantize.MEDIANCUT)
+    palette = np.array(pal_img.getpalette()[: k * 3]).reshape(k, 3)
+    counts = np.bincount(np.array(pal_img).ravel(), minlength=k)
+    return tuple(int(v) for v in palette[counts.argmax()])
+
+
 def render_basecoat(is_line: np.ndarray, region_is_char: np.ndarray,
                     labels: np.ndarray,
                     fill_color=(255, 136, 204),
