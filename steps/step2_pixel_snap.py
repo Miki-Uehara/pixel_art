@@ -135,20 +135,16 @@ def pixel_snap(image: Image.Image, cfg: PixelSnapConfig | None = None) -> Image.
         img_rgb = img_rgb.resize((int(iw * scale), int(ih * scale)), Image.LANCZOS)
 
     img_array = _quantize_pil(img_rgb, cfg.k_colors)
-    gray = np.array(img_rgb.convert("L"))
     h, w = img_array.shape[:2]
 
-    col_profile, row_profile = compute_profiles(gray)
-    col_step = estimate_step_size(col_profile, cfg)
-    row_step = estimate_step_size(row_profile, cfg)
-
-    def uniform_cuts(size: int) -> list[int]:
-        n = max(cfg.min_cuts_per_axis, cfg.fallback_target_segments)
-        return [int(round(i * size / n)) for i in range(n + 1)]
-
-    col_cuts = walk(col_profile, col_step, cfg) if col_step else uniform_cuts(w)
-    row_cuts = walk(row_profile, row_step, cfg) if row_step else uniform_cuts(h)
-    col_cuts, row_cuts = stabilize_both_axes(col_cuts, row_cuts, w, h, cfg)
+    # dot_count（fallback_target_segments）を列数として直接使用する。
+    # AI生成画像には既存のピクセルグリッドがないため、エッジ自動検出は使わない。
+    # 縦ドット数は元画像の縦横比から計算し、ピクセルを常に正方形に保つ。
+    n_cols = max(cfg.min_cuts_per_axis, cfg.fallback_target_segments)
+    n_rows = max(1, round(n_cols * h / w))
+    print(f"[pixel_snap] fallback_target_segments={cfg.fallback_target_segments}, n_cols={n_cols}, n_rows={n_rows}, img={w}×{h}")
+    col_cuts = [int(round(i * w / n_cols)) for i in range(n_cols + 1)]
+    row_cuts = [int(round(i * h / n_rows)) for i in range(n_rows + 1)]
 
     pixel_art_array = resample_vectorized(img_array, col_cuts, row_cuts)
 

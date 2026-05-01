@@ -19,6 +19,7 @@ if _env.exists():
 
 from steps.step2_pixel_snap import pixel_snap, PixelSnapConfig
 from steps.step3_remove_bg import remove_white_background
+from steps.step5_lineart import extract_lineart, base_coat
 
 FINAL_DIR = Path(__file__).parent / "output" / "final"
 FINAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -102,7 +103,8 @@ def h_snap(img,dots,scale,colors,sat,bri,con,hue,bg,tol):
     info=(f"✅ 変換完了！  ドット数 {int(dots)}×{dh}  /  "
           f"出力 {int(dots)*int(scale)}×{dh*int(scale)}px  /  "
           f"{int(colors)}色  /  背景透過 {'ON' if bg else 'OFF'}")
-    return snapped,prev,info,gr.update(visible=True,value=save(rgba)),snapped
+    path=save(rgba)
+    return snapped,prev,info,snapped,gr.update(visible=True,value=path)
 
 def h_color(st,sat,bri,con,hue,bg,tol):
     if st is None: return None
@@ -128,6 +130,23 @@ def h_compare_save(img,dot,scale,colors,sat,bri,con,hue,bg,tol):
     rgba=do_final(do_snap(img,int(dot),scale,colors),sat,bri,con,hue,bg,tol)
     path=save(rgba,prefix=f"pixel_{int(dot)}dot")
     return gr.update(visible=True,value=path),f"💾 保存完了！  {Path(path).name}"
+
+def h_lineart_extract(img, thr):
+    if img is None:
+        return None, "⚠ 画像をアップロードしてください", gr.update(visible=False), None
+    result = extract_lineart(as_pil(img), int(thr))
+    prev = on_checker(result)
+    path = save(result, "lineart")
+    iw, ih = result.size
+    return prev, f"✅ 線画抽出完了！  {iw}×{ih}px", gr.update(visible=True, value=path), result
+
+def h_base_coat(lineart_st, color):
+    if lineart_st is None:
+        return None, "⚠ 先に線画を抽出してください", gr.update(visible=False)
+    result = base_coat(as_pil(lineart_st), color)
+    prev = on_checker(result)
+    path = save(result, "basecoat")
+    return prev, f"✅ 下塗り完了！  塗り色: {color}", gr.update(visible=True, value=path)
 
 
 # ─── CSS ──────────────────────────────────────────────
@@ -345,7 +364,8 @@ footer { display: none !important; }
 
 with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
-    snapped_state = gr.State(None)
+    snapped_state   = gr.State(None)
+    lineart_state   = gr.State(None)
 
     gr.Markdown("# ✨ ピクセルアート ジェネレーター ✨", elem_classes="title")
     gr.Markdown("AIイラスト → ピクセルアート → 透過PNG  の自動変換ツール",
@@ -359,11 +379,11 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     with gr.Row(equal_height=False):
 
         # 左：画像アップロード
-        with gr.Column(scale=1, min_width=240):
-            input_image = gr.Image(type="pil", label="📷 入力画像", height=260)
+        with gr.Column(scale=1, min_width=280):
+            input_image = gr.Image(type="pil", label="📷 入力画像", height=430)
 
         # 右：設定エリア
-        with gr.Column(scale=3):
+        with gr.Column(scale=2):
 
             size_bar = gr.Markdown("⬆ 画像をアップロードしてね！", elem_classes="size-bar")
 
@@ -371,24 +391,24 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             gr.Markdown("🔲 **ドット設定**", elem_classes="section-head")
             with gr.Row():
                 dot_count = gr.Slider(32, 512, value=64, step=8,
-                    label="ドット数（横）— 少ない：粗くてレトロ　多い：細かくてなめらか",
-                    info="元画像の横幅を何マスに分割するかを設定します")
+                    label="ドット数（横）",
+                    info="少ない：粗くてレトロ　多い：細かくてなめらか")
                 display_scale = gr.Slider(1, 16, value=1, step=1,
-                    label="表示倍率 — 1ドットを何pxで表示するか",
-                    info="大きくするとドットがくっきり見えます")
+                    label="表示倍率",
+                    info="1ドットを何pxで表示するか。大きいとドットがくっきり")
 
             # ── カラー設定 ──
             gr.Markdown("🎨 **カラー設定**", elem_classes="section-head")
             k_colors = gr.Slider(4, 64, value=16, step=4,
-                label="カラーパレット数 — 少ない：よりドット絵らしく　多い：原画に近い色味",
-                info="色数を制限してドット絵らしさを出します")
+                label="カラーパレット数",
+                info="少ない：よりドット絵らしく　多い：原画に近い色味")
 
             # ── 背景透過設定 ──
             gr.Markdown("✂ **背景透過設定**", elem_classes="section-head")
             with gr.Row():
                 do_remove_bg = gr.Checkbox(value=True, label="白背景を透過する")
                 bg_tolerance = gr.Slider(0, 60, value=15, step=1,
-                    label="白の許容誤差 — 大きいほど広めに除去（グレーがかった背景にも対応）",
+                    label="白の許容誤差",
                     info="0：純白のみ除去　60：かなり広く除去")
 
     # サイズ情報リアルタイム更新
@@ -405,17 +425,17 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                     elem_classes="subtitle")
         with gr.Row():
             saturation = gr.Slider(0.0, 3.0, value=1.0, step=0.05,
-                label="彩度 — 低い：グレーっぽく　高い：鮮やかに",
-                info="1.0 = 変化なし")
+                label="彩度",
+                info="低い：グレーっぽく　高い：鮮やかに　（1.0 = 変化なし）")
             brightness = gr.Slider(0.2, 2.0, value=1.0, step=0.05,
-                label="明度 — 低い：暗く　高い：明るく",
-                info="1.0 = 変化なし")
+                label="明度",
+                info="低い：暗く　高い：明るく　（1.0 = 変化なし）")
         with gr.Row():
             contrast = gr.Slider(0.2, 3.0, value=1.0, step=0.05,
-                label="コントラスト — 低い：フラット　高い：メリハリ",
-                info="1.0 = 変化なし")
+                label="コントラスト",
+                info="低い：フラット　高い：メリハリ　（1.0 = 変化なし）")
             hue_shift = gr.Slider(-180, 180, value=0, step=5,
-                label="色相シフト（度） — プラス方向・マイナス方向に色相が回転",
+                label="色相シフト（度）",
                 info="0 = 変化なし　±180で色が反転")
 
     color_inputs = [saturation, brightness, contrast, hue_shift, do_remove_bg, bg_tolerance]
@@ -433,39 +453,86 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
             with gr.Row():
                 out_snap = gr.Image(type="pil",
                     label="🔲 ピクセルスナップ結果",
-                    height=360, image_mode="RGB")
+                    height=360, image_mode="RGB",
+                    )
                 out_final = gr.Image(type="pil",
                     label="✅ 完成！（チェック柄 = 透過部分）",
-                    height=360, image_mode="RGB")
+                    height=360, image_mode="RGB",
+                    )
 
             info_box = gr.Textbox(label="📋 ステータス", lines=2,
                                   interactive=False, elem_classes="status-box")
-
-            with gr.Row():
-                dl_btn = gr.DownloadButton("💾 PNGをダウンロード",
-                                           variant="primary", visible=False)
-
-            gr.Markdown("---")
-            gr.Markdown("🌈 **カラー調整して別バージョンを保存**", elem_classes="section-head")
-            with gr.Row():
-                save_color_btn = gr.Button("💾 このカラー設定で保存する", variant="secondary")
-                dl_btn2 = gr.DownloadButton("📥 ダウンロード", variant="secondary", visible=False)
-            save_info = gr.Textbox(label="", lines=1, interactive=False, elem_classes="status-box")
+            dl_final = gr.DownloadButton("📥 透過PNG をダウンロード",
+                variant="secondary", visible=False)
 
             run_btn.click(
                 fn=h_snap,
                 inputs=[input_image, dot_count, display_scale, k_colors] + color_inputs,
-                outputs=[out_snap, out_final, info_box, dl_btn, snapped_state],
+                outputs=[out_snap, out_final, info_box, snapped_state, dl_final],
             )
             for sl in color_inputs:
                 sl.change(fn=h_color,
                           inputs=[snapped_state] + color_inputs,
                           outputs=out_final)
-            save_color_btn.click(fn=h_color_save,
-                                 inputs=[snapped_state] + color_inputs,
-                                 outputs=[dl_btn2, save_info])
 
-        # ── タブ2：5パターン比較 ──
+        # ── タブ2：線画ツール ──
+        with gr.TabItem("✏ 線画ツール"):
+
+            gr.Markdown("### STEP 1　線画抽出（輝度 → 透明度変換）", elem_classes="section-head")
+            gr.Markdown(
+                "白・明るい部分 → 透明　/　黒・暗い部分 → 不透明（線のみを残す）",
+                elem_classes="subtitle"
+            )
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1, min_width=260):
+                    la_input = gr.Image(type="pil", label="📷 線画入力", height=380)
+                    la_threshold = gr.Slider(0, 255, value=128, step=1,
+                        label="閾値（2値化の境界）",
+                        info="0=スムーズ変換　128=標準2値化　255=ほぼ全域不透明")
+                    la_btn = gr.Button("✨  線画抽出！", variant="primary")
+
+                with gr.Column(scale=1, min_width=260):
+                    la_preview = gr.Image(type="pil",
+                        label="✅ 抽出結果（チェック柄 = 透過）", height=380,
+                        )
+                    la_dl = gr.DownloadButton("📥 線画を透過PNG でダウンロード",
+                        variant="secondary", visible=False)
+                    la_info = gr.Textbox(label="📋 ステータス", lines=1,
+                        interactive=False, elem_classes="status-box")
+
+            gr.Markdown("---")
+            gr.Markdown("### STEP 2　下塗り（キャラクターの内側を1色で塗る）",
+                        elem_classes="section-head")
+            gr.Markdown(
+                "STEP 1 で抽出した線画を使って下塗り。線は変えず・背景は透過のまま・キャラだけ塗る。",
+                elem_classes="subtitle"
+            )
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1, min_width=260):
+                    bc_color = gr.ColorPicker(value="#ff88cc", label="🎨 塗り色を選択")
+                    bc_btn = gr.Button("🖌  下塗り実行！", variant="primary")
+
+                with gr.Column(scale=1, min_width=260):
+                    bc_preview = gr.Image(type="pil",
+                        label="✅ 下塗り結果（チェック柄 = 透過）", height=380,
+                        )
+                    bc_dl = gr.DownloadButton("📥 下塗り画像を透過PNG でダウンロード",
+                        variant="secondary", visible=False)
+                    bc_info = gr.Textbox(label="📋 ステータス", lines=1,
+                        interactive=False, elem_classes="status-box")
+
+            la_btn.click(
+                fn=h_lineart_extract,
+                inputs=[la_input, la_threshold],
+                outputs=[la_preview, la_info, la_dl, lineart_state],
+            )
+            bc_btn.click(
+                fn=h_base_coat,
+                inputs=[lineart_state, bc_color],
+                outputs=[bc_preview, bc_info, bc_dl],
+            )
+
+        # ── タブ3：5パターン比較 ──
         with gr.TabItem("🔍 5パターン比較"):
             gr.Markdown(
                 "**64 / 96 / 128 / 192 / 256 ドット** の5種類を一気に生成して比較できます。\n"
@@ -489,7 +556,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                     label="保存するドット数を選択", type="value"
                 )
                 comp_save_btn = gr.Button("💾 選択したパターンを保存", variant="secondary")
-            comp_dl   = gr.DownloadButton("📥 ダウンロード", variant="secondary", visible=False)
+            comp_dl   = gr.DownloadButton("📥 透過PNG をダウンロード", variant="secondary", visible=False)
             comp_info = gr.Textbox(label="", lines=1, interactive=False, elem_classes="status-box")
 
             compare_btn.click(
