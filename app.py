@@ -265,11 +265,23 @@ def h_recolor_line(edge_alpha_st, pixchar_st, line_color, line_alpha):
     return line_prev, comp_prev, line_img, composite
 
 
+import tempfile
+
 def h_save(pil_img, type_name):
+    """ブラウザにPNGをダウンロードさせる。
+    スマホからは長押し→「写真に保存」(iPhone) でカメラロールへ。"""
     if pil_img is None:
-        return gr.update(value="⚠ まだ画像が生成されていません", visible=True)
-    path = save_versioned(pil_img, type_name)
-    return gr.update(value=f"✅ 保存しました：`{path}`", visible=True)
+        return gr.update(value=None, visible=False), gr.update(
+            value="⚠ まだ画像が生成されていません", visible=True
+        )
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp_path = Path(tempfile.gettempdir()) / f"pixelart_{stamp}_{type_name}.png"
+    pil_img.save(tmp_path, "PNG")
+    return gr.update(value=str(tmp_path), visible=True), gr.update(
+        value="✅ 下のリンクをタップ → 端末に保存\n"
+              "📱 iPhoneは画像を長押し→「写真に保存」でカメラロールへ直接保存できます",
+        visible=True,
+    )
 
 
 
@@ -420,6 +432,48 @@ button.secondary:active { transform: translate(4px, 4px) !important; box-shadow:
 }
 
 footer { display: none !important; }
+
+/* ── スマホ対応（縦並び） ───────────────────────────── */
+@media (max-width: 768px) {
+    .gradio-container { padding: 4px !important; }
+    .gradio-container .gr-row,
+    .gradio-container .row,
+    .gradio-container [data-testid="row"] {
+        flex-direction: column !important;
+        flex-wrap: wrap !important;
+    }
+    .gradio-container .gr-row > *,
+    .gradio-container .row > *,
+    .gradio-container [data-testid="row"] > * {
+        min-width: 100% !important;
+        width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+    h1 { font-size: 20px !important; letter-spacing: 2px !important; }
+    .subtitle p { font-size: 11px !important; }
+    .section-head p { font-size: 13px !important; padding: 5px 10px !important; }
+    .size-bar p { font-size: 12px !important; padding: 6px 10px !important; }
+    button.primary {
+        font-size: 16px !important;
+        padding: 10px 20px !important;
+        letter-spacing: 2px !important;
+    }
+    button.secondary { font-size: 13px !important; padding: 8px 14px !important; }
+    label > span { font-size: 13px !important; }
+    .image-container, .gr-image { max-height: 70vh !important; }
+}
+
+.mobile-hint p {
+    font-family: 'M PLUS Rounded 1c', sans-serif !important;
+    font-size: 13px !important;
+    color: #884499 !important;
+    background: #fff5fb !important;
+    border: 2px dashed #ee99cc !important;
+    border-radius: 10px !important;
+    padding: 8px 14px !important;
+    margin: 8px 0 !important;
+    text-align: center !important;
+}
 """
 
 # ─── UI ───────────────────────────────────────────────
@@ -439,6 +493,11 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
     gr.Markdown("# ✨ スマート抽出 ピクセルアート ✨", elem_classes="title")
     gr.Markdown("線画＋背景色画像で正確な下塗りを作って、大元画像をピクセル化＆透過",
                 elem_classes="subtitle")
+    gr.Markdown(
+        "📱 **スマホで保存：** 画像を長押し → "
+        "**iPhone「写真に保存」**でカメラロールへ／**Android「画像をダウンロード」** でフォトに",
+        elem_classes="mobile-hint",
+    )
 
     # ══════════════════════════════════════════════════
     # 1. 画像アップロード
@@ -483,6 +542,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
                          elem_classes="status-box")
     with gr.Row():
         sm_lineart_save = gr.Button("💾 線画抽出後の画像を保存", variant="secondary")
+    sm_lineart_save_file = gr.File(label="ダウンロード", visible=False)
     sm_lineart_save_status = gr.Markdown(visible=False, elem_classes="status-box")
 
     # ══════════════════════════════════════════════════
@@ -543,6 +603,7 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
         sm_lineart_pix_save = gr.Button("💾 外淵線画PNGを保存", variant="secondary")
         sm_save = gr.Button("💾 ピクセルアート透過PNGを保存", variant="secondary")
         sm_composite_save = gr.Button("💾 最終合成PNGを保存", variant="secondary")
+    sm_dl_file = gr.File(label="ダウンロード", visible=False)
     sm_save_status = gr.Markdown(visible=False, elem_classes="status-box")
 
     # ── ハンドラ配線 ────────────────────────────
@@ -587,19 +648,23 @@ with gr.Blocks(title="ピクセルアートジェネレーター") as demo:
 
     sm_lineart_save.click(
         fn=lambda i: h_save(i, "lineart"),
-        inputs=[sm_lineart_img_state], outputs=[sm_lineart_save_status],
+        inputs=[sm_lineart_img_state],
+        outputs=[sm_lineart_save_file, sm_lineart_save_status],
     )
     sm_lineart_pix_save.click(
         fn=lambda i: h_save(i, "outerline"),
-        inputs=[sm_line_img_state], outputs=[sm_save_status],
+        inputs=[sm_line_img_state],
+        outputs=[sm_dl_file, sm_save_status],
     )
     sm_save.click(
         fn=lambda i: h_save(i, "character"),
-        inputs=[sm_pixchar_state], outputs=[sm_save_status],
+        inputs=[sm_pixchar_state],
+        outputs=[sm_dl_file, sm_save_status],
     )
     sm_composite_save.click(
         fn=lambda i: h_save(i, "composite"),
-        inputs=[sm_comp_img_state], outputs=[sm_save_status],
+        inputs=[sm_comp_img_state],
+        outputs=[sm_dl_file, sm_save_status],
     )
 
 
